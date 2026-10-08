@@ -306,6 +306,11 @@ svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stro
 .kv{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
 .kv span{color:var(--muted)}
 @media (max-width:600px){.kv{grid-template-columns:1fr}}
+.zoomctl{position:absolute;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:5;display:flex;background:var(--panel);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
+.zoomctl button{border:0;background:transparent;min-width:44px;height:40px;font-size:18px;cursor:pointer;color:var(--fg);font-variant-numeric:tabular-nums}
+.zoomctl #zoomLbl{font-size:13px;color:var(--muted);min-width:56px}
+.zoomctl button:hover{background:var(--panel-2)}
+.player:not([hidden])~.zoomctl{bottom:80px}
 .timer-big{font-size:56px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(10px);background:#1C2533;color:#fff;padding:11px 18px;border-radius:12px;font-size:15px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;max-width:calc(100% - 32px);text-align:center;z-index:70}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -878,8 +883,16 @@ function nextFreeY(h) {
   return y;
 }
 function revealY(y) { const p = paper.offsetTop + yToPx(y); if (p < scroller.scrollTop || p > scroller.scrollTop + scroller.clientHeight - 80) scroller.scrollTo({ top: Math.max(0, p - 80), behavior: 'smooth' }); }
+function ensureTrailingPage() {
+  if (!note || !note.pages.length) return false;
+  computeTops(); const k = note.pages.length - 1, last = note.pages[k];
+  if (last.bg) return false;
+  const y0 = tops[k], used = note.strokes.some(st => st.bb && st.bb[3] > y0) || note.items.some(i => i.y + 10 > y0);
+  if (!used) return false;
+  note.pages.push({ id: uid(), h: PAGE_H }); computeTops(); return true;
+}
 function addItem(it, select = true) {
-  pushUndo(); note.items.push(it); renderItems(); changed();
+  pushUndo(); note.items.push(it); if (ensureTrailingPage()) layout(); renderItems(); changed();
   if (select) { setTool('lasso'); sel = it.id; markSel(); }
 }
 function addStamp() {
@@ -966,8 +979,8 @@ function movePinch() {
     if (!pinch) return; pinch.raf = 0;
     const [a, b] = [...touches.values()]; const rect = scroller.getBoundingClientRect();
     const mid = [(a.x + b.x) / 2, (a.y + b.y) / 2];
-    const z = clamp(pinch.z0 * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d0, 0.6, 2.6);
-    if (Math.abs(z - zoom) > 0.005) { zoom = z; layout(); }
+    const z = clamp(pinch.z0 * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d0, 0.5, 3);
+    if (Math.abs(z - zoom) > 0.005) { zoom = z; layout(); updZoom(); }
     scroller.scrollLeft = paper.offsetLeft + pinch.px * zoom - (mid[0] - rect.left);
     scroller.scrollTop = paper.offsetTop + pinch.py * zoom - (mid[1] - rect.top);
   });
@@ -986,7 +999,7 @@ paper.addEventListener('pointerdown', e => {
   cancelAnimationFrame(inertia);
   if (e.pointerType === 'touch') {
     // ignore the palm: touches while the Pencil is writing or just lifted, and very wide contacts
-    if (curType === 'pen' || performance.now() < penUntil || (penSeen && (e.width || 0) > 40)) return;
+    if (curType === 'pen' || performance.now() < penUntil || (penSeen && (e.width || 0) > 90)) return;
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { paper.setPointerCapture(e.pointerId); } catch {}
     if (touches.size === 2) { if (curType === 'touch') cancelCurrent(); finger = null; startPinch(); return; }
@@ -1077,7 +1090,7 @@ function pointerEnd(e) {
   st.bb = bbox(st.pts);
   pushUndo(); note.strokes.push(st); redraw();
   const last = note.pages.length - 1;
-  if (st.bb[3] > tops[last] + note.pages[last].h - 160) { note.pages.push({ id: uid(), h: PAGE_H }); layout(); }
+  if (ensureTrailingPage()) layout();
   changed();
 }
 paper.addEventListener('pointerup', pointerEnd);
@@ -1097,9 +1110,34 @@ scroller.addEventListener('wheel', e => {
   e.preventDefault();
   const rect = scroller.getBoundingClientRect();
   const px = (scroller.scrollLeft + e.clientX - rect.left - paper.offsetLeft) / zoom, py = (scroller.scrollTop + e.clientY - rect.top - paper.offsetTop) / zoom;
-  zoom = clamp(zoom * Math.exp(-e.deltaY / 300), 0.6, 2.6); layout();
+  zoom = clamp(zoom * Math.exp(-e.deltaY / 300), 0.5, 3); layout(); updZoom();
   scroller.scrollLeft = paper.offsetLeft + px * zoom - (e.clientX - rect.left); scroller.scrollTop = paper.offsetTop + py * zoom - (e.clientY - rect.top);
 }, { passive: false });
+
+/* zoom around a screen point; used by pinch, Safari gestures, ctrl+wheel and the buttons */
+function zoomAt(z, cx, cy) {
+  if (!note) return;
+  const rect = scroller.getBoundingClientRect();
+  if (cx == null) { cx = rect.left + rect.width / 2; cy = rect.top + rect.height / 2; }
+  const px = (scroller.scrollLeft + cx - rect.left - paper.offsetLeft) / zoom, py = (scroller.scrollTop + cy - rect.top - paper.offsetTop) / zoom;
+  zoom = clamp(z, 0.5, 3); layout();
+  scroller.scrollLeft = paper.offsetLeft + px * zoom - (cx - rect.left); scroller.scrollTop = paper.offsetTop + py * zoom - (cy - rect.top);
+  updZoom();
+}
+function updZoom() { const l = document.getElementById('zoomLbl'); if (l) l.textContent = Math.round(zoom * 100) + '%'; }
+(() => {
+  const zc = document.createElement('div'); zc.className = 'zoomctl'; zc.setAttribute('role', 'group'); zc.setAttribute('aria-label', 'Масштаб');
+  zc.innerHTML = '<button type="button" aria-label="Уменьшить">−</button><button type="button" id="zoomLbl" aria-label="Вернуть 100%">100%</button><button type="button" aria-label="Увеличить">+</button>';
+  const [minus, lbl, plus] = zc.querySelectorAll('button');
+  minus.onclick = () => zoomAt(zoom / 1.25); plus.onclick = () => zoomAt(zoom * 1.25); lbl.onclick = () => zoomAt(1);
+  $('#notePane').append(zc);
+  // Safari on iPad reports two-finger pinches as gesture events: the most reliable way to zoom there
+  let g0 = null;
+  const onStart = e => { if (!note || $('#editor').hidden || document.querySelector('.overlay')) return; e.preventDefault(); g0 = zoom; pinch = null; finger = null; touches.clear(); if (curType === 'touch') cancelCurrent(); };
+  const onChange = e => { if (g0 == null) return; e.preventDefault(); zoomAt(g0 * e.scale, e.clientX, e.clientY); };
+  const onEnd = e => { if (g0 == null) return; e.preventDefault(); g0 = null; };
+  for (const el of [scroller, document]) { el.addEventListener('gesturestart', onStart, { passive: false }); el.addEventListener('gesturechange', onChange, { passive: false }); el.addEventListener('gestureend', onEnd, { passive: false }); }
+})();
 
 /* shapes */
 function shapePts(kind, a, b) {
@@ -1745,7 +1783,7 @@ function groupLines(strokes) {
   for (const l of lines) if (!big.includes(l) && big.length) { const near = big.reduce((a, b) => Math.abs((b.top + b.bot) / 2 - l.top) < Math.abs((a.top + a.bot) / 2 - l.top) ? b : a); near.items.push(...l.items); }
   return (big.length ? big : lines).sort((a, b) => a.top - b.top).map(l => l.items.sort((a, b) => a.i - b.i).map(x => x.st));
 }
-async function recognize(strokes, lang, single) {
+async function recognize(strokes, lang, single, choose) {
   const lines = single ? [strokes] : groupLines(strokes); const out = [];
   for (const line of lines) {
     const bb = line.reduce((b, st) => { const s2 = st.bb || bbox(st.pts); return [Math.min(b[0], s2[0]), Math.min(b[1], s2[1]), Math.max(b[2], s2[2]), Math.max(b[3], s2[3])]; }, [1e9, 1e9, -1e9, -1e9]);
@@ -1755,7 +1793,7 @@ async function recognize(strokes, lang, single) {
     try { const r = await fetch(HW_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); j = await r.json(); }
     catch { throw { msg: 'Нет связи с распознаванием почерка. Проверьте интернет' }; }
     if (j[0] !== 'SUCCESS') throw { msg: 'Не получилось распознать почерк' };
-    out.push(((j[1][0] || [])[1] || [])[0] || '');
+    const cands = ((j[1][0] || [])[1] || []); out.push((choose && cands.find(choose)) || cands[0] || '');
   }
   return out.join('\n').trim();
 }
@@ -1798,7 +1836,7 @@ function rootTwo(S, Hm) { // radical as a V-stroke plus a separate overline
 async function recogMath(list) {
   if (!list.length) return '';
   if (list.length === 1 && isFlat(list[0], 1e9) === false && bH(list[0].bb) < 0.3 * bW(list[0].bb)) return '−';
-  return normMath(await recognize(list.map(s => s.st), 'en', true));
+  return normMath(await recognize(list.map(s => s.st), 'en', true, c => /^[0-9,+−×÷()^√%=²³π]+$/.test(normMath(c))));
 }
 async function mathBuild(S, Hm) {
   S = S.slice(); const nodes = [];
@@ -2325,7 +2363,7 @@ setInterval(tickSrc, 250);
 })();
 
 /* ---------- library ---------- */
-function blankNote(title, pp) { const t = Date.now(); return { id: uid(), kind: 'note', title, folder: null, fav: false, trashed: 0, created: t, updated: t, opened: t, paper: pp || { type: 'grid-m', color: '#FFFFFF' }, pages: [{ id: uid(), h: PAGE_H }], strokes: [], items: [], audio: [] }; }
+function blankNote(title, pp) { const t = Date.now(); return { id: uid(), kind: 'note', title, folder: null, fav: false, trashed: 0, created: t, updated: t, opened: t, paper: pp || { type: 'grid-m', color: '#FFFFFF' }, pages: [{ id: uid(), h: PAGE_H }, { id: uid(), h: PAGE_H }], strokes: [], items: [], audio: [] }; }
 async function refreshDocs() { docs = ((await store.all()) || []).filter(n => !n.deleted).map(upgrade); }
 const folders = () => docs.filter(d => d.kind === 'folder' && !d.trashed);
 const notesL = () => docs.filter(d => d.kind === 'note' && !d.trashed);
@@ -2516,7 +2554,7 @@ function openNote(n) {
   $('#titleIn').value = n.title;
   resetPages(); scroller.scrollTop = 0; scroller.scrollLeft = 0;
   setTool(tool === 'shape' || tool === 'text' ? 'pen' : tool);
-  layout(); renderItems(); renderRail();
+  ensureTrailingPage(); layout(); renderItems(); renderRail(); updZoom();
   if (n.source) loadSource();
   if ((n.audio || []).length) { /* player opens on demand */ }
 }
