@@ -248,6 +248,8 @@ svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stro
 .sliders{display:flex;flex-direction:column;gap:10px;background:var(--panel-2);border-radius:14px;padding:12px 14px}
 .sliders label{display:grid;grid-template-columns:120px 1fr;align-items:center;gap:12px;color:var(--accent);font-size:15px}
 .sliders input{accent-color:var(--accent);width:100%}
+.sliders .tgl{display:flex;justify-content:space-between;align-items:center}
+.sliders .tgl input{width:22px;height:22px}
 @media (max-width:600px){.palette{grid-template-columns:repeat(9,1fr)}.sliders label{grid-template-columns:1fr}}
 .menu-h{padding:8px 12px 4px;font-size:12px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
 .overlay{position:fixed;inset:0;z-index:50;background:rgba(15,22,35,.38);display:grid;place-items:center;padding:16px}
@@ -299,6 +301,11 @@ svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stro
 .trbox textarea:focus{outline:none}
 .trdict{display:flex;flex-direction:column;gap:4px;padding:0 4px;font-size:14px;color:var(--muted)}
 .trdict b{color:var(--fg);font-weight:600}
+.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:8px;font-size:15px;line-height:1.45}
+.steps code,.kv code{background:var(--panel-2);border-radius:6px;padding:1px 6px;font-size:13px;word-break:break-all}
+.kv{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
+.kv span{color:var(--muted)}
+@media (max-width:600px){.kv{grid-template-columns:1fr}}
 .timer-big{font-size:56px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(10px);background:#1C2533;color:#fff;padding:11px 18px;border-radius:12px;font-size:15px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;max-width:calc(100% - 32px);text-align:center;z-index:70}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -1017,8 +1024,14 @@ paper.addEventListener('pointermove', e => {
   if (tool === 'eraser' && erasing) { for (const ev of evs(e)) eraseAt(pt(ev)); return; }
   if (lasso) { for (const ev of evs(e)) lasso.pts.push(pt(ev)); drawLive(); return; }
   if (shape) { const b = pt(e); shape.st = { id: 'shape', tool: 'pen', pen: 'ball', sharp: true, color: penColor, w: penW, pts: shapePts(shapeKind, shape.a, b) }; shape.st.bb = bbox(shape.st.pts); drawLive(); return; }
-  if (!cur) return;
-  for (const ev of evs(e)) { const p = pt(ev), l = cur.pts[cur.pts.length - 1]; if (Math.hypot(p[0] - l[0], p[1] - l[1]) >= 0.7) cur.pts.push(p); }
+  if (!cur || cur.snapped) return;
+  const k = cur.tool === 'pen' ? 1 - smoothLvl * 0.6 : 1; // stabilizer: each new point moves only part of the way
+  for (const ev of evs(e)) {
+    const raw = pt(ev), l = cur.pts[cur.pts.length - 1];
+    const p = [r1(l[0] + (raw[0] - l[0]) * k), r1(l[1] + (raw[1] - l[1]) * k), raw[2]];
+    if (Math.hypot(p[0] - l[0], p[1] - l[1]) >= 0.7) cur.pts.push(p);
+  }
+  if (cur.tool === 'pen') armHold(cur.pts[cur.pts.length - 1]);
   drawLive();
 });
 function pointerEnd(e) {
@@ -1055,7 +1068,12 @@ function pointerEnd(e) {
   if (e.type === 'pointercancel' && st.pts.length < 3) return;
   const tap = Math.hypot(e.clientX - st._down[0], e.clientY - st._down[1]) < 6 && performance.now() - st._t0 < 350;
   if (tap) { const it = chipAt(st._down[0], st._down[1]); if (it) { goRef(it.ref); return; } }
-  delete st._t0; delete st._down;
+  delete st._t0; delete st._down; clearTimeout(holdT); holdAt = null;
+  if (!st.snapped && st.tool === 'pen') {
+    const sh = autoShapes ? recognizeShape(st.pts, true) : null;
+    if (sh) { st.pts = sh; st.sharp = true; } else st.pts = smoothPts(st.pts, smoothLvl);
+  }
+  delete st.snapped;
   st.bb = bbox(st.pts);
   pushUndo(); note.strokes.push(st); redraw();
   const last = note.pages.length - 1;
@@ -1099,6 +1117,74 @@ function shapePts(kind, a, b) {
   return P;
 }
 
+/* straightening hand-drawn shapes and smoothing handwriting */
+let smoothLvl = +(lsGet('kp-smooth') || 0.4), autoShapes = lsGet('kp-autoshape') === '1';
+function rdp(P, eps) {
+  if (P.length < 3) return P.slice();
+  const [a, b] = [P[0], P[P.length - 1]]; let idx = 0, dmax = 0;
+  const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  for (let i = 1; i < P.length - 1; i++) { const d = Math.abs((b[0] - a[0]) * (a[1] - P[i][1]) - (a[0] - P[i][0]) * (b[1] - a[1])) / L; if (d > dmax) { dmax = d; idx = i; } }
+  if (dmax <= eps) return [a, b];
+  return [...rdp(P.slice(0, idx + 1), eps).slice(0, -1), ...rdp(P.slice(idx), eps)];
+}
+function densify(V) { const out = []; for (let i = 0; i < V.length - 1; i++) { const [p, q] = [V[i], V[i + 1]]; const n = Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / 8)); for (let j = 0; j < n; j++) out.push([r1(p[0] + (q[0] - p[0]) * j / n), r1(p[1] + (q[1] - p[1]) * j / n), 0.5]); } const l = V[V.length - 1]; out.push([r1(l[0]), r1(l[1]), 0.5]); return out; }
+function recognizeShape(pts, strict) {
+  if (pts.length < 6) return null;
+  const P = pts.map(p => [p[0], p[1]]), bb = bbox(P), diag = Math.hypot(bb[2] - bb[0], bb[3] - bb[1]); if (diag < 30) return null;
+  let len = 0; for (let i = 1; i < P.length; i++) len += Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]);
+  const se = Math.hypot(P[0][0] - P[P.length - 1][0], P[0][1] - P[P.length - 1][1]);
+  if (se / len > (strict ? 0.97 : 0.93)) {
+    let [a, b] = [P[0], P[P.length - 1]]; const ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
+    if (Math.abs(((ang % 90) + 90) % 90) < 6 || Math.abs(((ang % 90) + 90) % 90) > 84) { if (Math.abs(b[1] - a[1]) < Math.abs(b[0] - a[0])) b = [b[0], a[1]]; else b = [a[0], b[1]]; } // snap near-horizontal/vertical
+    return densify([a, b]);
+  }
+  const closed = se < 0.2 * diag;
+  if (closed) {
+    const cx = (bb[0] + bb[2]) / 2, cy = (bb[1] + bb[3]) / 2, rx = (bb[2] - bb[0]) / 2 || 1, ry = (bb[3] - bb[1]) / 2 || 1;
+    const err = P.reduce((s2, [x, y]) => s2 + Math.abs(Math.hypot((x - cx) / rx, (y - cy) / ry) - 1), 0) / P.length;
+    let V = rdp([...P, P[0]], 0.07 * diag).slice(0, -1);
+    if (V.length > 2 && Math.hypot(V[0][0] - V[V.length - 1][0], V[0][1] - V[V.length - 1][1]) < 0.12 * diag) V.pop();
+    if ((V.length >= 5 || V.length === 0) && err < (strict ? 0.09 : 0.14)) {
+      let Rx = rx, Ry = ry; if (Math.abs(rx - ry) / Math.max(rx, ry) < 0.15) Rx = Ry = (rx + ry) / 2;
+      const out = []; for (let i = 0; i <= 72; i++) { const t = i / 72 * Math.PI * 2; out.push([r1(cx + Rx * Math.cos(t)), r1(cy + Ry * Math.sin(t)), 0.5]); } return out;
+    }
+    if (V.length === 3) return densify([...V, V[0]]);
+    if (V.length === 4) {
+      const axis = V.every((p, i) => { const q = V[(i + 1) % 4]; const a = Math.abs(Math.atan2(q[1] - p[1], q[0] - p[0]) * 180 / Math.PI) % 90; return a < 14 || a > 76; });
+      if (axis) return densify([[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]], [bb[0], bb[1]]]);
+      return densify([...V, V[0]]);
+    }
+    return null;
+  }
+  const V = rdp(P, 0.06 * diag);
+  if (!strict && V.length <= 4) return densify(V);
+  return null;
+}
+function smoothPts(pts, lvl) {
+  const k = Math.round(lvl * 4); if (!k || pts.length < 5) return pts;
+  const out = pts.map((p, i) => { if (i === 0 || i === pts.length - 1) return p; let sx = 0, sy = 0, n = 0; for (let j = Math.max(0, i - k); j <= Math.min(pts.length - 1, i + k); j++) { sx += pts[j][0]; sy += pts[j][1]; n++; } return [r1(sx / n), r1(sy / n), p[2]]; });
+  return out;
+}
+let holdT = 0, holdAt = null;
+function armHold(p) {
+  if (holdAt && Math.hypot(p[0] - holdAt[0], p[1] - holdAt[1]) * s < 4) return;
+  holdAt = p; clearTimeout(holdT);
+  holdT = setTimeout(() => { if (!cur || cur.snapped || cur.tool !== 'pen') return; const sh = recognizeShape(cur.pts, false); if (sh) { cur.pts = sh; cur.sharp = true; cur.snapped = true; drawLive(); } }, 550);
+}
+async function inkToText(lang) {
+  const srcSel = pickToSource(selection); if (!srcSel.strokes.length) return;
+  toast('Распознаю почерк…', 8000);
+  try {
+    const text = await recognize(srcSel.strokes, lang); if (!text) { toast('Не получилось разобрать почерк'); return; }
+    const lines = groupLines(srcSel.strokes), bb = srcSel.bb, lh = (bb[3] - bb[1]) / Math.max(1, lines.length);
+    const size = Math.round(clamp(lh * 0.62, 16, 64)), color = srcSel.strokes[0].color;
+    pushUndo(); const ids = new Set(srcSel.strokes.map(st => st.id));
+    note.strokes = note.strokes.filter(st => !ids.has(st.id));
+    note.items.push({ id: uid(), type: 'text', x: bb[0], y: bb[1], w: Math.max(200, Math.min(PAPER_W - bb[0] - 10, bb[2] - bb[0] + 80)), size, color, text });
+    clearSel(); renderItems(); redraw(); changed(); toast('Готово: почерк превращён в текст');
+  } catch (e) { toast(e.msg || 'Не получилось распознать почерк'); }
+}
+
 /* lasso selection */
 let moving = null;
 function pip(p, poly) { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > p[1]) !== (yj > p[1]) && p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi) c = !c; } return c; }
@@ -1139,7 +1225,7 @@ function showSel() {
   box.style.left = b[0] * s - 8 + 'px'; box.style.top = top + 'px'; box.style.width = (b[2] - b[0]) * s + 16 + 'px'; box.style.height = yToPx(b[3]) - top + 8 + 'px'; box.style.transform = '';
   const bar = $('#selBar'); bar.innerHTML = '';
   const add = (label, fn) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = label; x.addEventListener('pointerdown', e => e.stopPropagation()); x.onclick = e => { e.stopPropagation(); fn(x); }; bar.append(x); };
-  add('Копия', dupSel); add('Цвет', x => colorSel(x)); add('Перевести', translateSel); if (selection.strokes.size) add('Посчитать', calcSel); add('Удалить', delSel);
+  add('Копия', dupSel); add('Цвет', x => colorSel(x)); add('Перевести', translateSel); if (selection.strokes.size) { add('Посчитать', calcSel); add('В текст', x => menu(x, [{ head: 'Почерк на каком языке?' }, ...LANGS.slice(0, 4).map(([k, n]) => ({ label: n, run: () => inkToText(k) }))])); } add('Удалить', delSel);
   bar.style.top = top < 60 ? 'calc(100% + 10px)' : '-52px';
 }
 function clearSel(silent) { selection = null; $('#selBox').hidden = true; hiddenIds = null; if (!silent) redraw(); }
@@ -1160,12 +1246,11 @@ async function calcSel() {
   const srcSel = pickToSource(selection); if (!srcSel.strokes.length) return;
   toast('Распознаю пример…', 8000);
   try {
-    const raw = await recognize(srcSel.strokes, 'en', true);
-    const ex = normMath(raw); const r = calcExpr(ex, true);
+    const ex = await inkToMath(srcSel.strokes); const r = calcExpr(ex, true);
     const bb = srcSel.bb, h = Math.max(24, Math.min(80, (bb[3] - bb[1]) * 0.8));
     clearSel();
     addItem({ id: uid(), type: 'text', x: Math.min(PAPER_W - 120, bb[2] + 14), y: (bb[1] + bb[3]) / 2 - lineH(h) / 2, w: 300, size: Math.round(h), color: '#1F7AE0', text: '= ' + r }, false);
-    toast(`${ex} = ${r}`, 4000);
+    toast(`${prettyMath(ex)} = ${r}`, 4000);
   } catch (e) { toast(e.msg || 'Не получилось посчитать. Напишите пример чуть крупнее и разборчивее', 5000); }
 }
 (() => {
@@ -1312,7 +1397,13 @@ function penPopover(anchor, which) {
     const sl = document.createElement('div'); sl.className = 'sliders';
     const mk = (label, min, max, step, val, set) => { const l = document.createElement('label'); l.innerHTML = `<span>${label}</span>`; const r = document.createElement('input'); r.type = 'range'; r.min = min; r.max = max; r.step = step; r.value = val; r.oninput = () => { set(+r.value); }; r.onchange = draw; l.append(r); sl.append(l); };
     if (isM) { mk('Ширина', 8, 60, 1, markW, v => { markW = v; lsSet('kp-markw', v); }); mk('Прозрачность', 0.2, 1, 0.05, markAlpha, v => { markAlpha = v; }); }
-    else { mk('Ширина', 1, 14, 0.2, penW, v => { penW = v; lsSet('kp-penw', v); }); mk('Прозрачность', 0.15, 1, 0.05, penAlpha, v => { penAlpha = v; }); }
+    else {
+      mk('Ширина', 1, 14, 0.2, penW, v => { penW = v; lsSet('kp-penw', v); }); mk('Прозрачность', 0.15, 1, 0.05, penAlpha, v => { penAlpha = v; });
+      mk('Красивый почерк', 0, 1, 0.05, smoothLvl, v => { smoothLvl = v; lsSet('kp-smooth', v); });
+      const t = document.createElement('label'); t.className = 'tgl'; t.innerHTML = '<span>Ровные фигуры сразу</span>';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = autoShapes; cb.onchange = () => { autoShapes = cb.checked; lsSet('kp-autoshape', cb.checked ? '1' : '0'); }; t.append(cb); sl.append(t);
+      sl.insertAdjacentHTML('beforeend', '<p class="hint" style="margin:0">Нарисуйте линию, треугольник, квадрат или круг и задержите Pencil на месте — фигура выровняется. С галочкой выше фигуры выравниваются сами.</p>');
+    }
     box.append(sl);
     const done = document.createElement('button'); done.type = 'button'; done.className = 'btn primary'; done.textContent = 'Готово'; done.onclick = () => { closeMenu(); renderSub(); }; box.append(done);
   };
@@ -1528,7 +1619,7 @@ async function pdfToPages(file) {
 }
 const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
 const isImg = f => /^image\//.test(f.type) || /\.(png|jpe?g|heic|gif|webp)$/i.test(f.name || '');
-async function importFilesAsNotes(files) {
+async function importFilesAsNotes(files, opts = {}) {
   let last = null;
   for (const f of files) {
     try {
@@ -1543,7 +1634,7 @@ async function importFilesAsNotes(files) {
       } else toast('Этот файл не подходит: нужен PDF или картинка');
     } catch (e) { console.warn(e); toast('Не получилось открыть «' + (f.name || 'файл') + '»: ' + (e.message || e), 5000); }
   }
-  if (last) { syncSoon(); await refreshDocs(); if (files.length === 1) openNote(last); else renderLibrary(); }
+  if (last) { syncSoon(); await refreshDocs(); if (files.length === 1 && opts.open !== false) openNote(last); else if (!$('#library').hidden) renderLibrary(); }
 }
 async function importIntoNote(files, at) {
   for (const f of files) {
@@ -1678,17 +1769,111 @@ function speak(text, lang) {
 }
 if ('speechSynthesis' in window) { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices(); }
 
+/* ---------- handwritten math: layout analysis (roots, powers, fractions) on top of character recognition ---------- */
+const bW = b => b[2] - b[0], bH = b => b[3] - b[1], bCx = b => (b[0] + b[2]) / 2, bCy = b => (b[1] + b[3]) / 2;
+const bUnion = list => list.reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])], [1e9, 1e9, -1e9, -1e9]);
+const isFlat = (s, Hm) => bH(s.bb) < Math.max(0.3 * bW(s.bb), 0.22 * Hm) && bW(s.bb) > 0.45 * Hm;
+function rootOne(s, Hm) { // radical drawn as one stroke: a V on the left and a long overline to the right
+  const b = s.bb, w = bW(b), h = bH(b); if (h < 0.6 * Hm || w < 0.9 * h) return null;
+  const top = b[1] + 0.2 * h, tp = s.st.pts.filter(p => p[1] <= top); if (tp.length < 2) return null;
+  const tx0 = Math.min(...tp.map(p => p[0])), tx1 = Math.max(...tp.map(p => p[0]));
+  if (tx1 - tx0 < 0.45 * w || tx1 < b[2] - 0.12 * w) return null;
+  const low = s.st.pts.reduce((a, p) => p[1] > a[1] ? p : a); if (low[0] > tx0 + 0.1 * w) return null;
+  return { members: [s], x0: tx0, x1: b[2], y: b[1] };
+}
+function rootTwo(S, Hm) { // radical as a V-stroke plus a separate overline
+  for (const v of S) {
+    const b = v.bb, h = bH(b), w = bW(b); if (h < 0.55 * Hm || w > 1.5 * h || w < 0.25 * h) continue;
+    const ends = [v.st.pts[0], v.st.pts[v.st.pts.length - 1]];
+    const tr = ends.find(p => p[1] < b[1] + 0.3 * h && p[0] > b[0] + 0.55 * w); if (!tr) continue;
+    const low = v.st.pts.reduce((a, p) => p[1] > a[1] ? p : a); if (low[0] < b[0] + 0.1 * w || low[0] > b[0] + 0.85 * w) continue;
+    const f = S.find(o => o !== v && isFlat(o, Hm) && Math.abs(o.bb[0] - tr[0]) < 0.5 * Hm && Math.abs(bCy(o.bb) - tr[1]) < 0.5 * Hm && bW(o.bb) > 0.6 * Hm);
+    if (f) return { members: [v, f], x0: f.bb[0], x1: f.bb[2], y: Math.min(b[1], f.bb[1]) };
+  }
+  return null;
+}
+async function recogMath(list) {
+  if (!list.length) return '';
+  if (list.length === 1 && isFlat(list[0], 1e9) === false && bH(list[0].bb) < 0.3 * bW(list[0].bb)) return '−';
+  return normMath(await recognize(list.map(s => s.st), 'en', true));
+}
+async function mathBuild(S, Hm) {
+  S = S.slice(); const nodes = [];
+  for (;;) { // roots, widest first; contents parsed recursively
+    let r = null;
+    for (const s of S) { const x = rootOne(s, Hm); if (x && (!r || x.x1 - x.x0 > r.x1 - r.x0)) r = x; }
+    if (!r) r = rootTwo(S, Hm);
+    if (!r) break;
+    const ybot = Math.max(...r.members.map(m => m.bb[3]));
+    const inner = S.filter(o => !r.members.includes(o) && bCx(o.bb) > r.x0 - 0.1 * Hm && bCx(o.bb) < r.x1 + 0.15 * Hm && bCy(o.bb) > r.y && bCy(o.bb) < ybot + 0.3 * Hm);
+    S = S.filter(o => !r.members.includes(o) && !inner.includes(o));
+    const innerNodes = nodes.filter(n => bCx(n.bb) > r.x0 && bCx(n.bb) < r.x1 && bCy(n.bb) > r.y);
+    for (const n of innerNodes) nodes.splice(nodes.indexOf(n), 1);
+    nodes.push({ bb: bUnion([...r.members.map(m => m.bb), ...inner.map(o => o.bb)]), expr: '√(' + await mathMixed(inner, innerNodes, Hm) + ')' });
+  }
+  for (;;) { // fraction bars, widest first
+    let made = false;
+    for (const bar of S.filter(s => isFlat(s, Hm)).sort((a, c) => bW(c.bb) - bW(a.bb))) {
+      const b = bar.bb, y = bCy(b), inX = bb => bCx(bb) >= b[0] - 0.1 * Hm && bCx(bb) <= b[2] + 0.1 * Hm;
+      const above = S.filter(o => o !== bar && inX(o.bb) && bCy(o.bb) < y && y - o.bb[3] < 1.3 * Hm);
+      const below = S.filter(o => o !== bar && inX(o.bb) && bCy(o.bb) > y && o.bb[1] - y < 1.3 * Hm);
+      const nA = nodes.filter(n => inX(n.bb) && bCy(n.bb) < y), nB = nodes.filter(n => inX(n.bb) && bCy(n.bb) > y);
+      if (!(above.length || nA.length) || !(below.length || nB.length)) continue;
+      if (above.length + nA.length === 1 && below.length + nB.length === 1 && above.length && below.length && (isFlat(above[0], Hm) || isFlat(below[0], Hm))) continue; // ≡-like strokes, not a fraction
+      S = S.filter(o => o !== bar && !above.includes(o) && !below.includes(o));
+      for (const n of [...nA, ...nB]) nodes.splice(nodes.indexOf(n), 1);
+      const num = await mathMixed(above, nA, Hm), den = await mathMixed(below, nB, Hm);
+      nodes.push({ bb: bUnion([b, ...above.map(o => o.bb), ...below.map(o => o.bb), ...nA.map(n => n.bb), ...nB.map(n => n.bb)]), expr: `(${num})÷(${den})` });
+      made = true; break;
+    }
+    if (!made) break;
+  }
+  return mathMixed(S, nodes, Hm);
+}
+async function mathMixed(S, nodes, Hm) {
+  const cl = [];
+  for (const s of S.slice().sort((a, c) => a.bb[0] - c.bb[0])) {
+    const last = cl[cl.length - 1];
+    if (last && s.bb[0] < last.bb[2] - Math.min(bW(s.bb), bW(last.bb)) * 0.25) { last.items.push(s); last.bb = bUnion([last.bb, s.bb]); }
+    else cl.push({ items: [s], bb: s.bb.slice() });
+  }
+  const all = [...cl, ...nodes.map(n => ({ node: n, bb: n.bb }))].sort((a, c) => a.bb[0] - c.bb[0]);
+  let base = null;
+  for (const c of all) { // small and raised after a symbol = exponent
+    if (base && !c.node && bH(base.bb) > 0.3 * Hm && c.bb[3] < base.bb[1] + 0.55 * bH(base.bb) && bH(c.bb) < 0.8 * bH(base.bb) && bH(c.bb) > 0.12 * Hm) c.sup = true;
+    else base = c;
+  }
+  let out = '', run = [], sup = [];
+  const flushRun = async () => { if (run.length) { out += await recogMath(run); run = []; } };
+  const flushSup = async () => { if (sup.length) { const t = await recogMath(sup); out += t.length === 1 ? '^' + t : '^(' + t + ')'; sup = []; } };
+  for (const c of all) {
+    if (c.sup) { await flushRun(); sup.push(...c.items); continue; }
+    await flushSup();
+    if (c.node) { await flushRun(); out += c.node.expr; } else run.push(...c.items);
+  }
+  await flushRun(); await flushSup();
+  return out;
+}
+async function inkToMath(strokes) {
+  const S = strokes.map(st => ({ st, bb: st.bb || bbox(st.pts) }));
+  const hs = S.filter(s => !isFlat(s, 0) && bH(s.bb) > 0.3 * bW(s.bb)).map(s => bH(s.bb)).sort((a, c) => a - c);
+  const Hm = hs.length ? hs[Math.floor(hs.length / 2)] : 40;
+  return (await mathBuild(S, Hm)).replace(/^=+|=+$/g, '');
+}
+const prettyMath = ex => ex.replace(/\^2(?![\d,])/g, '²').replace(/\^3(?![\d,])/g, '³');
+
 /* ---------- calculator ---------- */
 function normMath(s) {
   return String(s).replace(/\s+/g, '').replace(/[—–‐-]/g, '−').replace(/[:÷]/g, '÷').replace(/\//g, '÷').replace(/[*·•]/g, '×')
     .replace(/([\d)²])[xXхХ](?=[\d(√])/g, '$1×').replace(/=+$/, '').replace(/\./g, ',')
     .replace(/[oOоО]/g, (m, i, str) => (/[\d,(]/.test(str[i - 1] || '') || /[\d,)]/.test(str[i + 1] || '')) ? '0' : m)
     .replace(/[lI|]/g, (m, i, str) => ((i === 0 || /[\d(+−×÷]/.test(str[i - 1])) && (i === str.length - 1 || /[\d)+−×÷]/.test(str[i + 1]))) ? '1' : m)
-    .replace(/V(?=\d|\()/g, '√');
+    .replace(/V(?=\d|\()/g, '√')
+    .replace(/[a-zA-Zа-яА-Я]+/g, w => /^(sin|cos|tan|log|ln)$/.test(w) ? w : w.replace(/[zZ]/g, '2').replace(/[sS]/g, '5').replace(/[bб]/g, '6').replace(/[gq]/g, '9').replace(/[BВ]/g, '8').replace(/[tT+]/g, '+').replace(/[хХ]/g, '×').replace(/[Тт]/g, '7'));
 }
 function calcExpr(ex, deg) {
   let js = ex.replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-').replace(/,/g, '.').replace(/π/g, '(PI)').replace(/\^/g, '**').replace(/²/g, '**2').replace(/√(\d+(?:\.\d+)?)/g, 'sqrt($1)').replace(/√/g, 'sqrt').replace(/%/g, '/100');
-  js = js.replace(/(\d|\))(?=\()/g, '$1*');
+  js = js.replace(/(\d|\))(?=\(|sqrt|sin|cos|tan|log|ln)/g, '$1*').replace(/\)(?=\d)/g, ')*');
   if (!/^[0-9+\-*/().\s a-zPI]*$/.test(js)) throw { msg: 'Не понимаю пример: ' + ex };
   js = js.replace(/\b(sin|cos|tan)\(/g, (m, f) => `T.${f}(`).replace(/\bsqrt\(/g, 'Math.sqrt(').replace(/\blog\(/g, 'Math.log10(').replace(/\bln\(/g, 'Math.log(').replace(/\bPI\b/g, 'Math.PI');
   if (/[a-z]/i.test(js.replace(/Math\.(sqrt|log10|log|PI)|T\.(sin|cos|tan)/g, ''))) throw { msg: 'Не понимаю пример: ' + ex };
@@ -1708,7 +1893,7 @@ function openCalc() {
       <div class="foot"><span style="opacity:.7;font-size:13px" id="cTip"></span><button type="button" data-a="ins">Вставить в заметку</button></div>`;
     const keys = [['sin', 'fn'], ['cos', 'fn'], ['tan', 'fn'], ['√', 'fn'], ['x²', 'fn'], ['log', 'fn'], ['ln', 'fn'], ['(', 'fn'], [')', 'fn'], ['^', 'fn'], ['7'], ['8'], ['9'], ['÷', 'op'], ['C', 'op'], ['4'], ['5'], ['6'], ['×', 'op'], ['⌫', 'op'], ['1'], ['2'], ['3'], ['−', 'op'], ['π', 'fn'], ['0'], [','], ['%', 'op'], ['+', 'op'], ['=', 'eq']];
     const K = box.querySelector('#cKeys'), pad = box.querySelector('#cPad'), cv = box.querySelector('#cCv'), g = cv.getContext('2d');
-    const show = () => { box.querySelector('#cEx').textContent = expr || ' '; let r = ''; try { r = expr ? calcExpr(expr, deg) : ''; } catch { r = ''; } box.querySelector('#cRes').textContent = r === '' ? (last || '0') : r; };
+    const show = () => { box.querySelector('#cEx').textContent = prettyMath(expr) || ' '; let r = ''; try { r = expr ? calcExpr(expr, deg) : ''; } catch { r = ''; } box.querySelector('#cRes').textContent = r === '' ? (last || '0') : r; };
     const setMode = m => {
       mode = m; lsSet('kp-calc', m);
       box.querySelectorAll('[data-t]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.t === m)));
@@ -1740,9 +1925,9 @@ function openCalc() {
       if (!padStrokes.length) { expr = ''; show(); return; }
       const tok = ++recTok;
       try {
-        const raw = await recognize(padStrokes.map(st => ({ ...st, bb: bbox(st.pts) })), 'en', true);
+        const ex = await inkToMath(padStrokes.map(st => ({ ...st, bb: bbox(st.pts) })));
         if (tok !== recTok) return;
-        expr = normMath(raw); show();
+        expr = ex; show();
       } catch (e) { if (tok === recTok) box.querySelector('#cEx').textContent = e.msg || 'Не получилось распознать'; }
     }
     let curSt = null;
@@ -1757,7 +1942,7 @@ function openCalc() {
     const dg = box.querySelector('[data-a="deg"]'); dg.onclick = () => { deg = !deg; dg.textContent = deg ? 'DEG' : 'RAD'; show(); };
     box.querySelector('[data-a="ins"]').onclick = () => {
       let r = ''; try { r = calcExpr(expr, deg); } catch {}
-      const text = r && expr !== r ? `${expr} = ${r}` : (r || last); if (!text) return;
+      const text = r && expr !== r ? `${prettyMath(expr)} = ${r}` : (r || last); if (!text) return;
       close(); const [x, y] = viewCenterU(); addItem({ id: uid(), type: 'text', x: x - 150, y, w: 500, size: 26, color: penColor, text });
     };
     const onKey = e => { if (!box.isConnected) { document.removeEventListener('keydown', onKey); return; } const m = { '*': '×', '/': '÷', '-': '−', 'Enter': '=', 'Backspace': '⌫', '.': ',' }; if (e.key in m) { e.preventDefault(); press(m[e.key]); return; } if (/^[0-9+(),%^]$/.test(e.key)) { e.preventDefault(); press(e.key); } };
@@ -2176,7 +2361,7 @@ function renderLibrary() {
   const title = folder ? folder.title : { home: 'Домой', fav: 'Избранное', recent: 'Недавние', trash: 'Корзина' }[sec];
   head.innerHTML = `<h1>${esc(title)}</h1>`;
   const rf = document.createElement('button'); rf.type = 'button'; rf.className = 'ib'; rf.innerHTML = ICON.sync; rf.title = 'Обновить'; rf.setAttribute('aria-label', 'Обновить'); rf.onclick = () => { syncNow(); refreshDocs().then(renderLibrary); }; head.append(rf);
-  if (sec === 'home' || folder) { const pl = document.createElement('button'); pl.type = 'button'; pl.className = 'ib'; pl.innerHTML = ICON.plus; pl.title = 'Создать'; pl.setAttribute('aria-label', 'Создать'); pl.onclick = () => menu(pl, [{ label: 'Новая заметка', icon: ICON.note, run: newNoteDialog }, folder ? null : { label: 'Новая папка', icon: ICON.folder, run: newFolder }, { label: 'Импорт PDF или картинки', icon: ICON.import, run: () => $('#fImport').click() }]); head.append(pl); }
+  if (sec === 'home' || folder) { const pl = document.createElement('button'); pl.type = 'button'; pl.className = 'ib'; pl.innerHTML = ICON.plus; pl.title = 'Создать'; pl.setAttribute('aria-label', 'Создать'); pl.onclick = () => menu(pl, [{ label: 'Новая заметка', icon: ICON.note, run: newNoteDialog }, folder ? null : { label: 'Новая папка', icon: ICON.folder, run: newFolder }, { label: 'Импорт PDF или картинки', icon: ICON.import, run: () => $('#fImport').click() }, user ? { label: 'Файлы через «Поделиться» на iPad', icon: ICON.share, run: shareSetupDlg } : null]); head.append(pl); }
   const tools = document.createElement('div'); tools.className = 'mtools';
   const q = document.createElement('input'); q.className = 'search'; q.type = 'search'; q.placeholder = 'Поиск'; q.value = lib.query; q.setAttribute('aria-label', 'Поиск по заметкам'); q.hidden = !lib.query && !lib.searchOpen;
   q.oninput = () => { lib.query = q.value; renderContent(); };
@@ -2415,6 +2600,7 @@ async function syncNow() {
       const { error: e4 } = await sb.from('assets').upsert({ user_id: user.id, id, data: a.data }, { onConflict: 'user_id,id' }); if (e4) throw e4;
       pending.delete(id); savePending();
     }
+    try { await ensureInbox(); await pullInbox(); } catch (e) { console.warn('inbox', e); }
     lastSync = Date.now(); syncState = 'ok'; syncErr = '';
     if (pulledOpen === 'deleted') { note = null; showLibrary(); toast('Эту заметку удалили на другом устройстве'); }
     else if (pulledOpen && !pulledOpen.trashed) reloadOpen(pulledOpen);
@@ -2423,6 +2609,55 @@ async function syncNow() {
     console.warn(e); syncState = 'err';
     syncErr = /fetch|network|load/i.test(e.message || '') ? 'Нет интернета, синхронизирую позже' : (e.message || String(e));
   } finally { syncing = false; renderSyncUI(); if (syncAgain) { syncAgain = false; syncSoon(); } }
+}
+/* files sent from the iPad share sheet through the "В Конспект" shortcut land in the inbox table */
+let inboxCode = null;
+async function ensureInbox() {
+  if (!sb || !user) return null; if (inboxCode) return inboxCode;
+  const { data, error } = await sb.from('inbox_codes').select('code').eq('user_id', user.id).maybeSingle(); if (error) throw error;
+  if (data) return inboxCode = data.code;
+  const code = (window.crypto && crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') : uid() + uid()).slice(0, 24);
+  const { error: e2 } = await sb.from('inbox_codes').insert({ user_id: user.id, code }); if (e2) throw e2;
+  return inboxCode = code;
+}
+async function pullInbox() {
+  if (!inboxCode) return;
+  const { data, error } = await sb.from('inbox').select('id,name,data').order('id'); if (error) throw error;
+  for (const r of data) {
+    try {
+      const bin = atob((r.data || '').replace(/[^A-Za-z0-9+/=]/g, '')); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const pdf = bin.startsWith('%PDF'), type = pdf ? 'application/pdf' : bin.startsWith('\x89PNG') ? 'image/png' : 'image/jpeg';
+      let name = String(r.name || 'Документ').trim() || 'Документ'; if (pdf && !/\.pdf$/i.test(name)) name += '.pdf';
+      await importFilesAsNotes([new File([u8], name, { type })], { open: $('#editor').hidden });
+      toast('Пришёл файл «' + name.replace(/\.pdf$/i, '') + '»', 4000);
+    } catch (e) { console.warn('inbox item', e); }
+    await sb.from('inbox').delete().eq('id', r.id);
+  }
+}
+function copyBtn(text) { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = 'Скопировать'; b.onclick = async () => { try { await navigator.clipboard.writeText(text); b.textContent = 'Скопировано'; } catch { toast('Выделите текст и скопируйте вручную'); } setTimeout(() => { b.textContent = 'Скопировать'; }, 1500); }; return b; }
+async function shareSetupDlg() {
+  let code = null; try { code = await ensureInbox(); } catch (e) { console.warn(e); }
+  if (!code) { toast('Сначала войдите в синхронизацию и подключитесь к интернету'); return; }
+  modal((b, close) => {
+    const url = SYNC.url + '/rest/v1/inbox';
+    const val = (label, v) => { const r = document.createElement('div'); r.className = 'kv'; r.innerHTML = `<span>${esc(label)}</span><code>${esc(v)}</code>`; r.append(copyBtn(v)); return r; };
+    b.innerHTML = `<h2>Файлы через «Поделиться»</h2>
+      <p>Обычные сайты-приложения Apple не пускает в меню «Поделиться». Поэтому делаем одну Быструю команду «В Конспект»: она появится в этом меню и перешлёт файл сюда. Настраивается один раз, минут 5.</p>
+      <ol class="steps">
+        <li>Откройте приложение <b>«Быстрые команды»</b> и нажмите <b>«+»</b>. Назовите команду <b>«В Конспект»</b>.</li>
+        <li>Нажмите <b>ⓘ</b> (или стрелку у названия) и включите <b>«Показывать в меню „Поделиться“»</b>. Типы входа: <b>PDF</b> и <b>Изображения</b>.</li>
+        <li>Добавьте действие <b>«Кодировать в Base64»</b> (поиск: base64). Вход — <b>«Ввод быстрой команды»</b>. Нажмите стрелку и выберите <b>«Разрывы строк: Нет»</b>.</li>
+        <li>Добавьте действие <b>«Получить содержимое URL»</b>. Вставьте адрес ниже. Нажмите стрелку: <b>Метод — POST</b>.</li>
+        <li>В <b>Заголовках</b> добавьте три строки: <b>apikey</b> — ключ ниже; <b>Content-Type</b> — <code>application/json</code>; <b>Prefer</b> — <code>return=minimal</code>.</li>
+        <li><b>Тело запроса — JSON</b>, три поля типа «Текст»: <b>code</b> — код ниже; <b>name</b> — переменная «Ввод быстрой команды» → «Имя»; <b>data</b> — переменная «Кодировано в Base64».</li>
+        <li>По желанию добавьте <b>«Показать уведомление»</b> с текстом «Отправлено в Конспект».</li>
+      </ol>
+      <div id="kvs"></div>
+      <p>Как пользоваться: на сайте Еголенда «Поделиться» → «В Конспект», потом откройте «Конспект» — файл появится новой заметкой, на которой можно писать.</p>
+      <div class="row" style="justify-content:flex-end"><button class="btn primary" type="button" data-a="c">Понятно</button></div>`;
+    const kv = b.querySelector('#kvs'); kv.append(val('Адрес (URL)', url), val('apikey', SYNC.key), val('code — ваш личный код', code));
+    b.querySelector('[data-a="c"]').onclick = close;
+  }, 'dlg wide');
 }
 function reloadOpen(n) {
   const oldSrc = JSON.stringify(note.source || null), top = scroller.scrollTop;
@@ -2463,7 +2698,7 @@ function renderSyncDlg() {
   } else {
     b.innerHTML = `<h2>Синхронизация</h2><p>Вы вошли как</p><div style="font-weight:600;word-break:break-all">${esc(user.email || '')}</div>
       <p${syncState === 'err' ? ' class="err"' : ''}>${esc(syncLabel())}</p>
-      <div class="row"><button class="btn primary" type="button" data-a="now">Синхронизировать сейчас</button><button class="btn" type="button" data-a="out">Выйти</button><button class="btn ghost" type="button" data-a="close">Закрыть</button></div>`;
+      <div class="row"><button class="btn primary" type="button" data-a="now">Синхронизировать сейчас</button><button class="btn" type="button" data-a="share">Файлы через «Поделиться»</button><button class="btn" type="button" data-a="out">Выйти</button><button class="btn ghost" type="button" data-a="close">Закрыть</button></div>`;
   }
   b.querySelectorAll('[data-a]').forEach(btn => { btn.onclick = () => dlgAction(btn.dataset.a); });
   const f = b.querySelector('#authForm'); if (f) f.onsubmit = e => { e.preventDefault(); dlgAction('in'); };
@@ -2472,6 +2707,7 @@ const authErr = m => /Invalid login/i.test(m) ? 'Неверная почта и�
 async function dlgAction(a) {
   if (a === 'close') { const o = syncBox && syncBox.closest('.overlay'); if (o) o.remove(); syncBox = null; dlgMsg = ''; return; }
   if (a === 'now') { syncNow(); return; }
+  if (a === 'share') { dlgAction('close'); shareSetupDlg(); return; }
   if (a === 'out') { await sb.auth.signOut(); user = null; syncState = 'off'; renderSyncUI(); return; }
   const email = (syncBox.querySelector('#authEmail').value || '').trim(), password = syncBox.querySelector('#authPass').value || '';
   if (!email || password.length < 6) { dlgMsg = 'Введите почту и пароль от 6 символов'; renderSyncDlg(); syncBox.querySelector('#authEmail').value = email; return; }
