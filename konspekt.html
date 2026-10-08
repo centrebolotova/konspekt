@@ -1037,7 +1037,7 @@ function pointerEnd(e) {
   if (tool === 'eraser') { if (erasing && erasing.changed) { pushUndo(erasing.snap); changed(); } erasing = null; return; }
   if (lasso) {
     const L = lasso; lasso = null; drawLive();
-    const tap = Math.hypot(e.clientX - L.down[0], e.clientY - L.down[1]) < 6;
+    const ext = bbox(L.pts), tap = (ext[2] - ext[0]) * s < 10 && (ext[3] - ext[1]) * s < 10;
     if (tap || L.pts.length < 5) { handleTap(L.down[0], L.down[1]); return; }
     if (tool === 'trans') { const pick = lassoPick(L.pts); if (!pick.strokes.size && !pick.items.size) { toast('Внутри ничего не написано, обведите текст целиком'); return; } openTranslator(pickToSource(pick)); return; }
     selectByLasso(L.pts); return;
