@@ -287,6 +287,16 @@ svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stro
 .calc .keys button.fn{font-size:15px;background:rgba(255,255,255,.07)}
 .calc .foot{display:flex;gap:8px;justify-content:space-between;align-items:center}
 .calc .foot button{border:0;background:rgba(255,255,255,.14);color:#fff;border-radius:10px;padding:8px 12px;cursor:pointer}
+.hpad{position:relative;height:230px;border-radius:14px;background:rgba(255,255,255,.08);overflow:hidden;touch-action:none}
+.hpad canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
+.hpad .ph{position:absolute;left:16px;top:50%;transform:translateY(-50%);color:rgba(255,255,255,.45);pointer-events:none;font-size:15px}
+.hpad .hbtns{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:8px}
+.hpad .hbtns button{width:42px;height:42px;border-radius:50%;border:0;background:rgba(255,255,255,.25);color:#fff;font-size:17px;cursor:pointer}
+.calc [hidden]{display:none!important}
+.trbox{border:1px solid var(--line);border-radius:14px;background:var(--panel-2);padding:6px 8px 8px}
+.trbox .trh{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--muted);padding-left:4px}
+.trbox textarea{width:100%;min-height:80px;border:0;background:transparent;padding:4px;resize:vertical;font-size:17px}
+.trbox textarea:focus{outline:none}
 .timer-big{font-size:56px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(10px);background:#1C2533;color:#fff;padding:11px 18px;border-radius:12px;font-size:15px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;max-width:calc(100% - 32px);text-align:center;z-index:70}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -442,6 +452,7 @@ const ICON = {
   edit: I('<path d="M4 20h4L19 9l-4-4L4 16z"/>'), move: I('<path d="M3 7h6l2 2h10v10H3z"/><path d="M12 12l3 2-3 2"/>'),
   restore: I('<path d="M4 12a8 8 0 108-8 8.2 8.2 0 00-6 2.6L4 9"/><path d="M4 4v5h5"/>'),
   paper: I('<path d="M6 3h12v18H6z"/><path d="M9 8h6M9 12h6M9 16h4"/>'),
+  speaker: I('<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12"/>'),
 };
 const tri = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1l7 4-7 4z"/></svg>';
 const note8 = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M4 1v6.2A1.8 1.8 0 105.2 8.9V3.4L8.5 2.5V1z"/></svg>';
@@ -888,6 +899,7 @@ function goRef(ref) {
 }
 
 /* ---------- pointer input ---------- */
+let penUntil = 0;
 let cur = null, curId = null, curType = '', erasing = null, finger = null, inertia = 0, lasso = null, shape = null, pinch = null;
 const touches = new Map();
 function pt(e) {
@@ -956,9 +968,16 @@ function cancelCurrent() { cur = null; curId = null; curType = ''; lasso = null;
 paper.addEventListener('pointerdown', e => {
   if (!note) return;
   closeMenu();
-  if (e.pointerType === 'pen') { if (!penSeen) { penSeen = true; renderRail(); renderSub(); } }
+  if (e.pointerType === 'pen') {
+    if (!penSeen) { penSeen = true; renderRail(); renderSub(); }
+    // the palm often lands first: drop any finger scroll or pinch it started
+    penUntil = performance.now() + 700; pinch = null; finger = null; touches.clear();
+    if (curType === 'touch') cancelCurrent();
+  }
   cancelAnimationFrame(inertia);
   if (e.pointerType === 'touch') {
+    // ignore the palm: touches while the Pencil is writing or just lifted, and very wide contacts
+    if (curType === 'pen' || performance.now() < penUntil || (penSeen && (e.width || 0) > 40)) return;
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { paper.setPointerCapture(e.pointerId); } catch {}
     if (touches.size === 2) { if (curType === 'touch') cancelCurrent(); finger = null; startPinch(); return; }
@@ -973,7 +992,7 @@ paper.addEventListener('pointerdown', e => {
   curId = e.pointerId; curType = e.pointerType;
   const p = pt(e);
   if (tool === 'eraser') { erasing = { snap: snapshot(), changed: false }; eraseAt(p); return; }
-  if (tool === 'lasso') { if (selection) clearSel(); sel = null; markSel(); lasso = { pts: [p], down: [e.clientX, e.clientY], t0: performance.now() }; return; }
+  if (tool === 'lasso' || tool === 'trans') { if (selection) clearSel(); sel = null; markSel(); lasso = { pts: [p], down: [e.clientX, e.clientY], t0: performance.now() }; return; }
   if (tool === 'shape') { shape = { a: p, st: null }; return; }
   const isPen = tool === 'pen';
   cur = { id: uid(), tool: isPen ? 'pen' : 'marker', pen: isPen ? penKind : undefined, color: isPen ? penColor : markColor, w: isPen ? penW : markW, pts: [p] };
@@ -983,6 +1002,7 @@ paper.addEventListener('pointerdown', e => {
   drawLive();
 });
 paper.addEventListener('pointermove', e => {
+  if (e.pointerType === 'pen') penUntil = performance.now() + 700;
   if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pinch) { movePinch(); return; }
@@ -1019,6 +1039,7 @@ function pointerEnd(e) {
     const L = lasso; lasso = null; drawLive();
     const tap = Math.hypot(e.clientX - L.down[0], e.clientY - L.down[1]) < 6;
     if (tap || L.pts.length < 5) { handleTap(L.down[0], L.down[1]); return; }
+    if (tool === 'trans') { const pick = lassoPick(L.pts); if (!pick.strokes.size && !pick.items.size) { toast('Внутри ничего не написано, обведите текст целиком'); return; } openTranslator(pickToSource(pick)); return; }
     selectByLasso(L.pts); return;
   }
   if (shape) {
@@ -1079,7 +1100,7 @@ function shapePts(kind, a, b) {
 /* lasso selection */
 let moving = null;
 function pip(p, poly) { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > p[1]) !== (yj > p[1]) && p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi) c = !c; } return c; }
-function selectByLasso(poly) {
+function lassoPick(poly) {
   const ids = new Set(), its = new Set();
   for (const st of note.strokes) {
     const step = Math.max(1, Math.floor(st.pts.length / 30)); let n = 0, inn = 0;
@@ -1087,8 +1108,19 @@ function selectByLasso(poly) {
     if (n && inn / n >= 0.6) ids.add(st.id);
   }
   for (const it of note.items) { const w = it.w || 60, h = itemH(it); if (pip([it.x + w / 2, it.y + h / 2], poly)) its.add(it.id); }
-  if (!ids.size && !its.size) return;
-  selection = { strokes: ids, items: its }; showSel();
+  return { strokes: ids, items: its };
+}
+function selectByLasso(poly) {
+  const pick = lassoPick(poly);
+  if (!pick.strokes.size && !pick.items.size) return;
+  selection = pick; showSel();
+}
+function pickToSource(pick) {
+  const strokes = note.strokes.filter(st => pick.strokes.has(st.id) && st.tool !== 'marker');
+  const text = note.items.filter(i => pick.items.has(i.id) && i.type === 'text').map(i => i.text).join('\n');
+  const all = note.strokes.filter(st => pick.strokes.has(st.id));
+  const bb = all.length ? all.reduce((b, st) => [Math.min(b[0], st.bb[0]), Math.min(b[1], st.bb[1]), Math.max(b[2], st.bb[2]), Math.max(b[3], st.bb[3])], [1e9, 1e9, -1e9, -1e9]) : null;
+  return { strokes, text, bb };
 }
 function selBounds() {
   let b = [1e9, 1e9, -1e9, -1e9];
@@ -1105,7 +1137,7 @@ function showSel() {
   box.style.left = b[0] * s - 8 + 'px'; box.style.top = top + 'px'; box.style.width = (b[2] - b[0]) * s + 16 + 'px'; box.style.height = yToPx(b[3]) - top + 8 + 'px'; box.style.transform = '';
   const bar = $('#selBar'); bar.innerHTML = '';
   const add = (label, fn) => { const x = document.createElement('button'); x.type = 'button'; x.textContent = label; x.addEventListener('pointerdown', e => e.stopPropagation()); x.onclick = e => { e.stopPropagation(); fn(x); }; bar.append(x); };
-  add('Копия', dupSel); add('Цвет', x => colorSel(x)); if ([...selection.items].some(id => (note.items.find(i => i.id === id) || {}).type === 'text')) add('Перевести', translateSel); add('Удалить', delSel);
+  add('Копия', dupSel); add('Цвет', x => colorSel(x)); add('Перевести', translateSel); if (selection.strokes.size) add('Посчитать', calcSel); add('Удалить', delSel);
   bar.style.top = top < 60 ? 'calc(100% + 10px)' : '-52px';
 }
 function clearSel(silent) { selection = null; $('#selBox').hidden = true; hiddenIds = null; if (!silent) redraw(); }
@@ -1121,7 +1153,19 @@ function colorSel(anchor) {
   for (const c of PEN_COLORS) { const b = document.createElement('button'); b.type = 'button'; b.className = 'sw'; b.style.background = c; b.setAttribute('aria-label', 'Цвет'); b.onclick = () => { closeMenu(); pushUndo(); note.strokes = note.strokes.map(st => selection.strokes.has(st.id) && st.tool !== 'marker' ? { ...st, color: c } : st); for (const it of note.items) if (selection.items.has(it.id) && it.type === 'text') it.color = c; redraw(); renderItems(); changed(); }; row.append(b); }
   menu(anchor, [{ el: row }]);
 }
-function translateSel() { const t = note.items.filter(i => selection.items.has(i.id) && i.type === 'text').map(i => i.text).join('\n'); openTranslator(t); }
+function translateSel() { openTranslator(pickToSource(selection)); }
+async function calcSel() {
+  const srcSel = pickToSource(selection); if (!srcSel.strokes.length) return;
+  toast('Распознаю пример…', 8000);
+  try {
+    const raw = await recognize(srcSel.strokes, 'en', true);
+    const ex = normMath(raw); const r = calcExpr(ex, true);
+    const bb = srcSel.bb, h = Math.max(24, Math.min(80, (bb[3] - bb[1]) * 0.8));
+    clearSel();
+    addItem({ id: uid(), type: 'text', x: Math.min(PAPER_W - 120, bb[2] + 14), y: (bb[1] + bb[3]) / 2 - lineH(h) / 2, w: 300, size: Math.round(h), color: '#1F7AE0', text: '= ' + r }, false);
+    toast(`${ex} = ${r}`, 4000);
+  } catch (e) { toast(e.msg || 'Не получилось посчитать. Напишите пример чуть крупнее и разборчивее', 5000); }
+}
 (() => {
   const box = $('#selBox');
   box.addEventListener('pointerdown', e => {
@@ -1157,19 +1201,21 @@ function translateSel() { const t = note.items.filter(i => selection.items.has(i
 })();
 
 /* ---------- toolbar ---------- */
-const TOOLS = [['pen', 'Ручка', ICON.pen], ['marker', 'Маркер', ICON.marker], ['eraser', 'Ластик', ICON.eraser], ['lasso', 'Лассо', ICON.lasso], ['text', 'Текст', ICON.text], ['shape', 'Фигуры', ICON.shapes]];
-const ACTIONS = [['sticker', 'Стикеры', ICON.sticker, b => openStickers(b)], ['translate', 'Переводчик', ICON.translate, () => openTranslator('')], ['photo', 'Фото', ICON.photo, () => $('#fPhoto').click()]];
+// top bar: tools switch the mode, actions open something once
+const BAR = [['pen', 'Ручка', ICON.pen], ['marker', 'Маркер', ICON.marker], ['eraser', 'Ластик', ICON.eraser], ['lasso', 'Лассо', ICON.lasso], ['text', 'Текст', ICON.text], ['shape', 'Фигуры', ICON.shapes],
+  ['sticker', 'Стикеры', ICON.sticker, b => openStickers(b)], ['trans', 'Переводчик: обведите написанное', ICON.translate], ['photo', 'Фото', ICON.photo, () => $('#fPhoto').click()]];
 function renderTools() {
   const tb = $('#tools'); tb.innerHTML = '';
-  for (const [k, label, ic] of TOOLS) {
-    const b = document.createElement('button'); b.type = 'button'; b.className = 'ib tool'; b.innerHTML = ic;
-    if (k === 'pen' || k === 'marker') b.insertAdjacentHTML('beforeend', `<span class="sw-dot" style="background:${k === 'pen' ? penColor : markColor}"></span>`);
-    b.title = label; b.setAttribute('aria-label', label); b.setAttribute('aria-pressed', String(tool === k));
-    b.onclick = () => { if (tool === k && (k === 'pen' || k === 'marker')) penPopover(b, k); else setTool(k); }; tb.append(b);
-  }
-  for (const [k, label, ic, fn] of ACTIONS) {
+  for (const [k, label, ic, fn] of BAR) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'ib tool'; b.innerHTML = ic; b.dataset.k = k;
-    b.title = label; b.setAttribute('aria-label', label); b.onclick = () => fn(b); tb.append(b);
+    if (k === 'pen' || k === 'marker') b.insertAdjacentHTML('beforeend', `<span class="sw-dot" style="background:${k === 'pen' ? penColor : markColor}"></span>`);
+    b.title = label; b.setAttribute('aria-label', label);
+    if (fn) b.onclick = () => fn(b);
+    else {
+      b.setAttribute('aria-pressed', String(tool === k));
+      b.onclick = () => { if (tool === k && (k === 'pen' || k === 'marker')) penPopover(b, k); else if (tool === k && k === 'trans') openTranslator({ text: '' }); else setTool(k); };
+    }
+    tb.append(b);
   }
 }
 function swatchRow(colors, current, onPick, custom) {
@@ -1212,6 +1258,11 @@ function renderSub() {
     b.onclick = () => confirmBox('Очистить лист?', 'Все записи и картинки на текущем листе будут удалены. Это можно отменить кнопкой «Отменить».', 'Очистить', () => clearPage(currentPage()));
     sub.append(b);
   } else if (tool === 'lasso') hint('Обведите записи, чтобы выделить и передвинуть. Касание записи включает её звук или видео.');
+  else if (tool === 'trans') {
+    const mk = (val, key, label) => { const s2 = document.createElement('select'); s2.className = 'field'; s2.style.cssText = 'flex:none;height:34px;width:auto'; s2.setAttribute('aria-label', label); s2.innerHTML = LANGS.map(([k, n]) => `<option value="${k}"${k === val ? ' selected' : ''}>${n}</option>`).join(''); s2.onchange = () => lsSet(key, s2.value); return s2; };
+    sub.append(mk(lsGet('kp-tr-from') || 'en', 'kp-tr-from', 'Язык написанного'), Object.assign(document.createElement('span'), { textContent: '→', className: 'hint' }), mk(lsGet('kp-tr-to') || 'ru', 'kp-tr-to', 'Язык перевода'));
+    hint('Обведите написанное от руки — переведу и озвучу. Нажмите на значок ещё раз, чтобы ввести текст.');
+  }
   else if (tool === 'text') {
     sub.append(seg([[18, 'S'], [26, 'M'], [36, 'L'], [50, 'XL']], textSize, k => { textSize = k; if (activeText) { activeText.size = k; positionItems(); changed(); } renderSub(); }));
     sub.append(swatchRow(PEN_COLORS, textColor, c => { textColor = c; if (activeText) { activeText.color = c; renderItems(); changed(); } renderSub(); }, true));
@@ -1582,30 +1633,91 @@ function offerFile(file) {
   });
 }
 
+/* ---------- handwriting recognition, speech ---------- */
+const HW_URL = 'https://inputtools.google.com/request?ime=handwriting&app=mobilesearch&cs=1&oe=UTF-8';
+function groupLines(strokes) {
+  const sorted = strokes.map((st, i) => ({ st, i, bb: st.bb || bbox(st.pts) })).sort((a, b) => (a.bb[1] + a.bb[3]) - (b.bb[1] + b.bb[3]));
+  const lines = [];
+  for (const s of sorted) {
+    const cy = (s.bb[1] + s.bb[3]) / 2;
+    const line = lines.find(l => cy >= l.top - 4 && cy <= l.bot + 4);
+    if (line) { line.items.push(s); line.top = Math.min(line.top, s.bb[1]); line.bot = Math.max(line.bot, s.bb[3]); }
+    else lines.push({ items: [s], top: s.bb[1], bot: s.bb[3] });
+  }
+  // tiny marks (dots, accents) that formed their own "line" belong to the nearest real line
+  const big = lines.filter(l => l.bot - l.top > 12 || l.items.length > 1);
+  for (const l of lines) if (!big.includes(l) && big.length) { const near = big.reduce((a, b) => Math.abs((b.top + b.bot) / 2 - l.top) < Math.abs((a.top + a.bot) / 2 - l.top) ? b : a); near.items.push(...l.items); }
+  return (big.length ? big : lines).sort((a, b) => a.top - b.top).map(l => l.items.sort((a, b) => a.i - b.i).map(x => x.st));
+}
+async function recognize(strokes, lang, single) {
+  const lines = single ? [strokes] : groupLines(strokes); const out = [];
+  for (const line of lines) {
+    const bb = line.reduce((b, st) => { const s2 = st.bb || bbox(st.pts); return [Math.min(b[0], s2[0]), Math.min(b[1], s2[1]), Math.max(b[2], s2[2]), Math.max(b[3], s2[3])]; }, [1e9, 1e9, -1e9, -1e9]);
+    const ink = line.map(st => { const step = Math.max(1, Math.ceil(st.pts.length / 80)); const xs = [], ys = [], ts = []; for (let i = 0; i < st.pts.length; i += step) { xs.push(Math.round(st.pts[i][0] - bb[0])); ys.push(Math.round(st.pts[i][1] - bb[1])); ts.push(i * 10); } return [xs, ys, ts]; });
+    const body = { options: 'enable_pre_space', requests: [{ writing_guide: { writing_area_width: Math.round(bb[2] - bb[0] + 20), writing_area_height: Math.round(bb[3] - bb[1] + 20) }, ink, language: lang }] };
+    let j;
+    try { const r = await fetch(HW_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); j = await r.json(); }
+    catch { throw { msg: 'Нет связи с распознаванием почерка. Проверьте интернет' }; }
+    if (j[0] !== 'SUCCESS') throw { msg: 'Не получилось распознать почерк' };
+    out.push(((j[1][0] || [])[1] || [])[0] || '');
+  }
+  return out.join('\n').trim();
+}
+const VOICE_LANG = { en: 'en-US', ru: 'ru-RU', de: 'de-DE', fr: 'fr-FR', es: 'es-ES', it: 'it-IT', zh: 'zh-CN', ja: 'ja-JP', ko: 'ko-KR', tr: 'tr-TR', uk: 'uk-UA' };
+function speak(text, lang) {
+  if (!text) return;
+  if (!('speechSynthesis' in window)) { toast('Озвучка здесь не поддерживается'); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text); u.lang = VOICE_LANG[lang] || lang; u.rate = 0.9;
+  const v = speechSynthesis.getVoices().filter(v => v.lang.replace('_', '-').toLowerCase().startsWith(u.lang.slice(0, 2).toLowerCase()));
+  const best = v.find(x => x.lang.replace('_', '-') === u.lang && /enhanced|premium|siri/i.test(x.name)) || v.find(x => x.lang.replace('_', '-') === u.lang) || v[0];
+  if (best) u.voice = best;
+  speechSynthesis.speak(u);
+}
+if ('speechSynthesis' in window) { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices(); }
+
 /* ---------- calculator ---------- */
+function normMath(s) {
+  return String(s).replace(/\s+/g, '').replace(/[—–‐-]/g, '−').replace(/[:÷]/g, '÷').replace(/\//g, '÷').replace(/[*·•]/g, '×')
+    .replace(/([\d)²])[xXхХ](?=[\d(√])/g, '$1×').replace(/=+$/, '').replace(/\./g, ',')
+    .replace(/[oOоО]/g, (m, i, str) => (/[\d,(]/.test(str[i - 1] || '') || /[\d,)]/.test(str[i + 1] || '')) ? '0' : m)
+    .replace(/[lI|]/g, (m, i, str) => ((i === 0 || /[\d(+−×÷]/.test(str[i - 1])) && (i === str.length - 1 || /[\d)+−×÷]/.test(str[i + 1]))) ? '1' : m)
+    .replace(/V(?=\d|\()/g, '√');
+}
+function calcExpr(ex, deg) {
+  let js = ex.replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-').replace(/,/g, '.').replace(/π/g, '(PI)').replace(/\^/g, '**').replace(/²/g, '**2').replace(/√(\d+(?:\.\d+)?)/g, 'sqrt($1)').replace(/√/g, 'sqrt').replace(/%/g, '/100');
+  js = js.replace(/(\d|\))(?=\()/g, '$1*');
+  if (!/^[0-9+\-*/().\s a-zPI]*$/.test(js)) throw { msg: 'Не понимаю пример: ' + ex };
+  js = js.replace(/\b(sin|cos|tan)\(/g, (m, f) => `T.${f}(`).replace(/\bsqrt\(/g, 'Math.sqrt(').replace(/\blog\(/g, 'Math.log10(').replace(/\bln\(/g, 'Math.log(').replace(/\bPI\b/g, 'Math.PI');
+  if (/[a-z]/i.test(js.replace(/Math\.(sqrt|log10|log|PI)|T\.(sin|cos|tan)/g, ''))) throw { msg: 'Не понимаю пример: ' + ex };
+  const T = { sin: x => Math.sin(deg ? x * Math.PI / 180 : x), cos: x => Math.cos(deg ? x * Math.PI / 180 : x), tan: x => Math.tan(deg ? x * Math.PI / 180 : x) };
+  let v; try { v = Function('T', '"use strict";return (' + js + ')')(T); } catch { throw { msg: 'Не могу посчитать: ' + ex }; }
+  if (typeof v !== 'number' || !isFinite(v)) throw { msg: 'Не могу посчитать: ' + ex };
+  return String(Math.round(v * 1e10) / 1e10).replace('.', ',');
+}
 function openCalc() {
   modal((box, close) => {
-    let expr = '', deg = true, last = '';
-    box.innerHTML = `<div class="tabs"><button type="button" aria-pressed="true">Инженерный</button><button type="button" data-a="deg" aria-pressed="false">DEG</button><button type="button" class="x" data-a="x" aria-label="Закрыть">×</button></div>
-      <div class="scr"><div class="ex" id="cEx"></div><div class="res" id="cRes">0</div></div><div class="keys" id="cKeys"></div>
-      <div class="foot"><span style="opacity:.7;font-size:13px">Можно печатать с клавиатуры</span><button type="button" data-a="ins">Вставить в заметку</button></div>`;
+    let expr = '', deg = true, last = '', mode = lsGet('kp-calc') || 'hand';
+    let padStrokes = [], recT = 0, recTok = 0;
+    box.innerHTML = `<div class="tabs"><button type="button" data-t="hand">Рукописный ввод</button><button type="button" data-t="keys">Инженерный</button><button type="button" data-a="deg" aria-pressed="false">DEG</button><button type="button" class="x" data-a="x" aria-label="Закрыть">×</button></div>
+      <div class="scr"><div class="ex" id="cEx"></div><div class="res" id="cRes">0</div></div>
+      <div class="hpad" id="cPad"><canvas id="cCv"></canvas><span class="ph" id="cPh">Напишите пример здесь, например 12×7−5</span><div class="hbtns"><button type="button" data-a="undo" aria-label="Стереть последний штрих">⌫</button><button type="button" data-a="clr">C</button></div></div>
+      <div class="keys" id="cKeys"></div>
+      <div class="foot"><span style="opacity:.7;font-size:13px" id="cTip"></span><button type="button" data-a="ins">Вставить в заметку</button></div>`;
     const keys = [['sin', 'fn'], ['cos', 'fn'], ['tan', 'fn'], ['√', 'fn'], ['x²', 'fn'], ['log', 'fn'], ['ln', 'fn'], ['(', 'fn'], [')', 'fn'], ['^', 'fn'], ['7'], ['8'], ['9'], ['÷', 'op'], ['C', 'op'], ['4'], ['5'], ['6'], ['×', 'op'], ['⌫', 'op'], ['1'], ['2'], ['3'], ['−', 'op'], ['π', 'fn'], ['0'], [','], ['%', 'op'], ['+', 'op'], ['=', 'eq']];
-    const K = box.querySelector('#cKeys');
-    const show = () => { box.querySelector('#cEx').textContent = expr || ' '; let r = ''; try { r = expr ? calc(expr) : ''; } catch { r = ''; } box.querySelector('#cRes').textContent = r === '' ? (last || '0') : r; };
-    const calc = ex => {
-      let js = ex.replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-').replace(/,/g, '.').replace(/π/g, '(PI)').replace(/\^/g, '**').replace(/²/g, '**2').replace(/√/g, 'sqrt').replace(/%/g, '/100');
-      if (!/^[0-9+\-*/().\s a-zPI]*$/.test(js)) throw 0;
-      js = js.replace(/\b(sin|cos|tan)\(/g, (m, f) => `T.${f}(`).replace(/\bsqrt\(/g, 'Math.sqrt(').replace(/\blog\(/g, 'Math.log10(').replace(/\bln\(/g, 'Math.log(').replace(/\bPI\b/g, 'Math.PI');
-      if (/[a-z]/i.test(js.replace(/Math\.(sqrt|log10|log|PI)|T\.(sin|cos|tan)/g, ''))) throw 0;
-      const T = { sin: x => Math.sin(deg ? x * Math.PI / 180 : x), cos: x => Math.cos(deg ? x * Math.PI / 180 : x), tan: x => Math.tan(deg ? x * Math.PI / 180 : x) };
-      const v = Function('T', '"use strict";return (' + js + ')')(T);
-      if (typeof v !== 'number' || !isFinite(v)) throw 0;
-      return String(Math.round(v * 1e10) / 1e10).replace('.', ',');
+    const K = box.querySelector('#cKeys'), pad = box.querySelector('#cPad'), cv = box.querySelector('#cCv'), g = cv.getContext('2d');
+    const show = () => { box.querySelector('#cEx').textContent = expr || ' '; let r = ''; try { r = expr ? calcExpr(expr, deg) : ''; } catch { r = ''; } box.querySelector('#cRes').textContent = r === '' ? (last || '0') : r; };
+    const setMode = m => {
+      mode = m; lsSet('kp-calc', m);
+      box.querySelectorAll('[data-t]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.t === m)));
+      pad.hidden = m !== 'hand'; K.hidden = m !== 'keys';
+      box.querySelector('#cTip').textContent = m === 'hand' ? 'Пишите пальцем или Pencil' : 'Можно печатать с клавиатуры';
+      if (m === 'hand') requestAnimationFrame(sizePad);
     };
     const press = k => {
       if (k === 'C') { expr = ''; last = ''; }
       else if (k === '⌫') expr = expr.replace(/(sin\(|cos\(|tan\(|log\(|ln\(|√\(|.)$/, '');
-      else if (k === '=') { try { last = calc(expr); toast(expr + ' = ' + last); expr = last; } catch { toast('Не могу посчитать: проверьте скобки'); } }
+      else if (k === '=') { try { last = calcExpr(expr, deg); expr = last; } catch (e) { toast(e.msg || 'Не могу посчитать'); } }
       else if (['sin', 'cos', 'tan', 'log', 'ln'].includes(k)) expr += k + '(';
       else if (k === '√') expr += '√(';
       else if (k === 'x²') expr += '²';
@@ -1613,54 +1725,98 @@ function openCalc() {
       show();
     };
     for (const [k, c] of keys) { const b = document.createElement('button'); b.type = 'button'; b.textContent = k; if (c) b.className = c; b.onclick = () => press(k); K.append(b); }
+    // handwriting pad
+    let D = 1;
+    function sizePad() { D = Math.min(2, window.devicePixelRatio || 1); cv.width = cv.clientWidth * D; cv.height = cv.clientHeight * D; drawPad(); }
+    function drawPad() {
+      g.setTransform(D, 0, 0, D, 0, 0); g.clearRect(0, 0, cv.width, cv.height);
+      g.strokeStyle = '#fff'; g.lineWidth = 3; g.lineCap = g.lineJoin = 'round';
+      for (const st of padStrokes) { g.beginPath(); st.pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); if (st.pts.length === 1) g.lineTo(st.pts[0][0] + 0.1, st.pts[0][1]); g.stroke(); }
+      box.querySelector('#cPh').hidden = padStrokes.length > 0;
+    }
+    async function runRec() {
+      if (!padStrokes.length) { expr = ''; show(); return; }
+      const tok = ++recTok;
+      try {
+        const raw = await recognize(padStrokes.map(st => ({ ...st, bb: bbox(st.pts) })), 'en', true);
+        if (tok !== recTok) return;
+        expr = normMath(raw); show();
+      } catch (e) { if (tok === recTok) box.querySelector('#cEx').textContent = e.msg || 'Не получилось распознать'; }
+    }
+    let curSt = null;
+    cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); const r = cv.getBoundingClientRect(); curSt = { pts: [[e.clientX - r.left, e.clientY - r.top, .5]] }; padStrokes.push(curSt); clearTimeout(recT); drawPad(); });
+    cv.addEventListener('pointermove', e => { if (!curSt) return; const r = cv.getBoundingClientRect(); for (const ev of evs(e)) curSt.pts.push([ev.clientX - r.left, ev.clientY - r.top, .5]); drawPad(); });
+    const endSt = () => { if (!curSt) return; curSt = null; clearTimeout(recT); recT = setTimeout(runRec, 650); };
+    cv.addEventListener('pointerup', endSt); cv.addEventListener('pointercancel', endSt);
+    box.querySelector('[data-a="undo"]').onclick = () => { padStrokes.pop(); drawPad(); clearTimeout(recT); recT = setTimeout(runRec, 300); };
+    box.querySelector('[data-a="clr"]').onclick = () => { padStrokes = []; expr = ''; last = ''; drawPad(); show(); };
+    box.querySelectorAll('[data-t]').forEach(b => b.onclick = () => setMode(b.dataset.t));
     box.querySelector('[data-a="x"]').onclick = close;
     const dg = box.querySelector('[data-a="deg"]'); dg.onclick = () => { deg = !deg; dg.textContent = deg ? 'DEG' : 'RAD'; show(); };
     box.querySelector('[data-a="ins"]').onclick = () => {
-      let r = ''; try { r = calc(expr); } catch {}
+      let r = ''; try { r = calcExpr(expr, deg); } catch {}
       const text = r && expr !== r ? `${expr} = ${r}` : (r || last); if (!text) return;
       close(); const [x, y] = viewCenterU(); addItem({ id: uid(), type: 'text', x: x - 150, y, w: 500, size: 26, color: penColor, text });
     };
-    const onKey = e => { if (!box.isConnected) { document.removeEventListener('keydown', onKey); return; } const m = { '*': '×', '/': '÷', '-': '−', 'Enter': '=', 'Backspace': '⌫', '.': ',', 'Escape': null }; if (e.key in m) { e.preventDefault(); if (m[e.key]) press(m[e.key]); return; } if (/^[0-9+(),%^]$/.test(e.key)) { e.preventDefault(); press(e.key); } };
+    const onKey = e => { if (!box.isConnected) { document.removeEventListener('keydown', onKey); return; } const m = { '*': '×', '/': '÷', '-': '−', 'Enter': '=', 'Backspace': '⌫', '.': ',' }; if (e.key in m) { e.preventDefault(); press(m[e.key]); return; } if (/^[0-9+(),%^]$/.test(e.key)) { e.preventDefault(); press(e.key); } };
     document.addEventListener('keydown', onKey);
-    show();
+    setMode(mode); show();
   }, 'calc');
 }
 
 /* ---------- translator ---------- */
 const LANGS = [['en', 'Английский'], ['ru', 'Русский'], ['de', 'Немецкий'], ['fr', 'Французский'], ['es', 'Испанский'], ['it', 'Итальянский'], ['zh', 'Китайский'], ['ja', 'Японский'], ['ko', 'Корейский'], ['tr', 'Турецкий'], ['uk', 'Украинский']];
-function openTranslator(text) {
+async function translateText(q, from, to) {
+  const parts = q.match(/[\s\S]{1,450}(?=\s|$)|[\s\S]{1,450}/g) || [q]; const res = [];
+  for (const part of parts) {
+    const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(part)}&langpair=${from}|${to}`);
+    const j = await r.json(); if (String(j.responseStatus) !== '200') throw new Error(j.responseDetails || 'ошибка сервиса');
+    res.push(j.responseData.translatedText);
+  }
+  const ta = document.createElement('textarea'); ta.innerHTML = res.join(' '); return ta.value;
+}
+function openTranslator(source) {
+  source = typeof source === 'string' ? { text: source } : (source || {});
   modal((b, close) => {
     let from = lsGet('kp-tr-from') || 'en', to = lsGet('kp-tr-to') || 'ru';
     const opts = v => LANGS.map(([k, n]) => `<option value="${k}"${k === v ? ' selected' : ''}>${n}</option>`).join('');
+    const hasInk = !!(source.strokes && source.strokes.length);
     b.innerHTML = `<h2>Переводчик</h2>
       <div class="row"><select class="field" id="trFrom" aria-label="С какого языка">${opts(from)}</select><button class="btn icon" type="button" id="trSwap" aria-label="Поменять языки">${ICON.swap}</button><select class="field" id="trTo" aria-label="На какой язык">${opts(to)}</select></div>
-      <textarea id="trIn" placeholder="Напечатайте или вставьте текст"></textarea>
-      <div class="row"><button class="btn primary" type="button" id="trGo">Перевести</button><span class="hint" id="trSt"></span></div>
-      <textarea id="trOut" readonly placeholder="Здесь будет перевод"></textarea>
-      <div class="row" style="justify-content:flex-end"><button class="btn" type="button" data-a="c">Закрыть</button><button class="btn" type="button" id="trIns">Вставить в заметку</button></div>`;
+      <div class="trbox"><div class="trh"><span>${hasInk ? 'Распознано' : 'Текст'}</span><button class="btn icon ghost" type="button" id="sayIn" aria-label="Озвучить">${ICON.speaker}</button></div><textarea id="trIn" placeholder="${hasInk ? 'Распознаю почерк…' : 'Напечатайте или вставьте текст'}"></textarea></div>
+      <div class="row"><button class="btn primary" type="button" id="trGo">Перевести</button>${hasInk ? '<button class="btn" type="button" id="trRe">Распознать заново</button>' : ''}<span class="hint" id="trSt"></span></div>
+      <div class="trbox"><div class="trh"><span>Перевод</span><button class="btn icon ghost" type="button" id="sayOut" aria-label="Озвучить перевод">${ICON.speaker}</button></div><textarea id="trOut" readonly placeholder="Здесь будет перевод"></textarea></div>
+      <div class="row" style="justify-content:flex-end"><button class="btn" type="button" data-a="c">Закрыть</button><button class="btn" type="button" id="trIns">Вставить перевод в заметку</button></div>`;
     const inp = b.querySelector('#trIn'), out = b.querySelector('#trOut'), st = b.querySelector('#trSt');
-    inp.value = text || '';
-    b.querySelector('#trFrom').onchange = e => { from = e.target.value; lsSet('kp-tr-from', from); };
-    b.querySelector('#trTo').onchange = e => { to = e.target.value; lsSet('kp-tr-to', to); };
-    b.querySelector('#trSwap').onclick = () => { [from, to] = [to, from]; b.querySelector('#trFrom').value = from; b.querySelector('#trTo').value = to; lsSet('kp-tr-from', from); lsSet('kp-tr-to', to); const t = out.value; if (t) { out.value = inp.value; inp.value = t; } };
+    inp.value = source.text || '';
     const go = async () => {
       const q = inp.value.trim(); if (!q) return;
       st.textContent = 'Перевожу…'; out.value = '';
-      try {
-        const parts = q.match(/[\s\S]{1,450}(?=\s|$)|[\s\S]{1,450}/g) || [q]; const res = [];
-        for (const part of parts) {
-          const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(part)}&langpair=${from}|${to}`);
-          const j = await r.json(); if (j.responseStatus !== 200 && j.responseStatus !== '200') throw new Error(j.responseDetails || 'ошибка сервиса');
-          res.push(j.responseData.translatedText);
-        }
-        const ta = document.createElement('textarea'); ta.innerHTML = res.join(' '); out.value = ta.value; st.textContent = '';
-      } catch (e) { st.textContent = 'Не получилось перевести: ' + (e.message || 'нет интернета'); }
+      try { out.value = await translateText(q, from, to); st.textContent = ''; }
+      catch (e) { st.textContent = 'Не получилось перевести: ' + (e.message || 'нет интернета'); }
     };
+    const rec = async () => {
+      if (!hasInk) return;
+      st.textContent = 'Распознаю почерк…';
+      try { const t = await recognize(source.strokes, from); inp.value = [source.text, t].filter(Boolean).join('\n'); st.textContent = ''; if (inp.value) { speak(inp.value, from); go(); } else st.textContent = 'Не разобрала почерк, попробуйте обвести ещё раз'; }
+      catch (e) { st.textContent = e.msg || 'Не получилось распознать'; }
+    };
+    b.querySelector('#trFrom').onchange = e => { from = e.target.value; lsSet('kp-tr-from', from); if (hasInk) rec(); };
+    b.querySelector('#trTo').onchange = e => { to = e.target.value; lsSet('kp-tr-to', to); go(); };
+    b.querySelector('#trSwap').onclick = () => { [from, to] = [to, from]; b.querySelector('#trFrom').value = from; b.querySelector('#trTo').value = to; lsSet('kp-tr-from', from); lsSet('kp-tr-to', to); const t = out.value; if (t) { out.value = inp.value; inp.value = t; } };
     b.querySelector('#trGo').onclick = go;
+    const re = b.querySelector('#trRe'); if (re) re.onclick = rec;
+    b.querySelector('#sayIn').onclick = () => speak(inp.value.trim(), from);
+    b.querySelector('#sayOut').onclick = () => speak(out.value.trim(), to);
     inp.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) go(); });
-    b.querySelector('[data-a="c"]').onclick = close;
-    b.querySelector('#trIns').onclick = () => { if (!out.value) return; close(); const [x, y] = viewCenterU(); addItem({ id: uid(), type: 'text', x: Math.max(20, x - 300), y, w: 600, size: 24, color: '#1F5FD0', text: out.value }); };
-    if (text) go(); else setTimeout(() => inp.focus(), 30);
+    b.querySelector('[data-a="c"]').onclick = () => { speechSynthesis && speechSynthesis.cancel(); close(); };
+    b.querySelector('#trIns').onclick = () => {
+      if (!out.value) return; close();
+      const bb = source.bb; const [cx, cy] = viewCenterU();
+      const x = bb ? bb[0] : Math.max(20, cx - 300), y = bb ? bb[3] + 10 : cy;
+      addItem({ id: uid(), type: 'text', x, y, w: Math.max(300, Math.min(700, PAPER_W - x - 20)), size: 24, color: '#1F7AE0', text: out.value }, false);
+    };
+    if (hasInk) rec(); else if (source.text) { speak(source.text, from); go(); } else setTimeout(() => inp.focus(), 30);
   });
 }
 
