@@ -944,7 +944,7 @@ function goRef(ref) {
 }
 
 /* ---------- pointer input ---------- */
-let penUntil = 0;
+let penUntil = 0, lastInk = null;
 let cur = null, curId = null, curType = '', erasing = null, finger = null, inertia = 0, lasso = null, shape = null, pinch = null;
 const touches = new Map();
 function pt(e) {
@@ -1104,13 +1104,17 @@ function pointerEnd(e) {
   if (e.type === 'pointercancel' && st.pts.length < 3) return;
   const tap = Math.hypot(e.clientX - st._down[0], e.clientY - st._down[1]) < 6 && performance.now() - st._t0 < 350;
   if (tap) { const it = chipAt(st._down[0], st._down[1]); if (it) { goRef(it.ref); return; } }
-  delete st._t0; delete st._down; clearTimeout(holdT); holdAt = null;
+  const startedAt = st._t0; delete st._t0; delete st._down; clearTimeout(holdT); holdAt = null;
   if (!st.snapped && st.tool === 'pen') {
-    const sh = autoShapes ? recognizeShape(st.pts, 'auto') : null;
+    // handwriting is a run of strokes close in time and place; a shape is drawn on its own
+    const sb = bbox(st.pts), nearPrev = lastInk && startedAt - lastInk.t < 1600 &&
+      Math.max(0, lastInk.bb[0] - sb[2], sb[0] - lastInk.bb[2]) < 250 && Math.max(0, lastInk.bb[1] - sb[3], sb[1] - lastInk.bb[3]) < 120;
+    const sh = autoShapes && !nearPrev ? recognizeShape(st.pts, 'auto') : null;
     if (sh) { st.pts = sh; st.sharp = true; } else st.pts = smoothPts(st.pts, smoothLvl);
   }
   delete st.snapped;
   st.bb = bbox(st.pts);
+  lastInk = { t: performance.now(), bb: st.bb };
   pushUndo(); note.strokes.push(st); redraw();
   const last = note.pages.length - 1;
   if (ensureTrailingPage()) layout();
@@ -1233,8 +1237,9 @@ function recognizeShape(pts, mode) {
     if (ang < 6 || ang > 84) { if (Math.abs(b[1] - a[1]) < Math.abs(b[0] - a[0])) b = [b[0], a[1]]; else b = [a[0], b[1]]; }
     return densify([a, b]);
   }
-  if (auto && diag < 120) return null;
-  const closed = se < 0.35 * diag || len > 2.4 * diag; // ends meet, or the pen went all the way round
+  if (auto && diag < 150) return null;
+  // auto: the ends must really meet (a letter like «А» with its crossbar doesn't); hold: looser
+  const closed = auto ? se < 0.22 * diag : (se < 0.35 * diag || len > 2.4 * diag);
   if (!closed) { if (auto) return null; const V = rdp(P, 0.06 * diag); return V.length <= 4 ? densify(V) : null; }
   let H = convexHull(P); if (H.length < 3) return null;
   if (H.length > 22) { const step = H.length / 22; H = Array.from({ length: 22 }, (_, i) => H[Math.floor(i * step)]); }
