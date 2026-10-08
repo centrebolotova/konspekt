@@ -1122,8 +1122,11 @@ let smoothLvl = +(lsGet('kp-smooth') || 0.4), autoShapes = lsGet('kp-autoshape')
 function rdp(P, eps) {
   if (P.length < 3) return P.slice();
   const [a, b] = [P[0], P[P.length - 1]]; let idx = 0, dmax = 0;
-  const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-  for (let i = 1; i < P.length - 1; i++) { const d = Math.abs((b[0] - a[0]) * (a[1] - P[i][1]) - (a[0] - P[i][0]) * (b[1] - a[1])) / L; if (d > dmax) { dmax = d; idx = i; } }
+  const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  for (let i = 1; i < P.length - 1; i++) {
+    const d = L > 1e-6 ? Math.abs((b[0] - a[0]) * (a[1] - P[i][1]) - (a[0] - P[i][0]) * (b[1] - a[1])) / L : Math.hypot(P[i][0] - a[0], P[i][1] - a[1]);
+    if (d > dmax) { dmax = d; idx = i; }
+  }
   if (dmax <= eps) return [a, b];
   return [...rdp(P.slice(0, idx + 1), eps).slice(0, -1), ...rdp(P.slice(idx), eps)];
 }
