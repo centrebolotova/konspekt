@@ -316,6 +316,8 @@ svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stro
 .trbox .trh{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--muted);padding-left:4px}
 .trbox textarea{width:100%;min-height:80px;border:0;background:transparent;padding:4px;resize:vertical;font-size:17px}
 .trbox textarea:focus{outline:none}
+.trdict{display:flex;flex-direction:column;gap:4px;padding:0 4px;font-size:14px;color:var(--muted)}
+.trdict b{color:var(--fg);font-weight:600}
 .timer-big{font-size:56px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(10px);background:#1C2533;color:#fff;padding:11px 18px;border-radius:12px;font-size:15px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;max-width:calc(100% - 32px);text-align:center;z-index:70}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -1788,14 +1790,25 @@ function openCalc() {
 
 /* ---------- translator ---------- */
 const LANGS = [['en', 'Английский'], ['ru', 'Русский'], ['de', 'Немецкий'], ['fr', 'Французский'], ['es', 'Испанский'], ['it', 'Итальянский'], ['zh', 'Китайский'], ['ja', 'Японский'], ['ko', 'Корейский'], ['tr', 'Турецкий'], ['uk', 'Украинский']];
+async function fetchT(url, ms = 9000) {
+  const ac = new AbortController(), t = setTimeout(() => ac.abort(), ms);
+  try { const r = await fetch(url, { signal: ac.signal }); if (!r.ok) throw new Error('сервис ответил ' + r.status); return await r.json(); }
+  finally { clearTimeout(t); }
+}
+// Google Translate first (accurate, gives dictionary variants for single words); MyMemory as a fallback
 async function translateText(q, from, to) {
+  try {
+    const j = await fetchT(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${from}&tl=${to}&hl=ru&dt=t&dt=bd&dj=1&q=${encodeURIComponent(q)}`);
+    const text = (j.sentences || []).map(s => s.trans || '').join('').trim();
+    if (text) return { text, dict: (j.dict || []).map(d => ({ pos: d.pos, terms: (d.terms || []).slice(0, 6) })) };
+  } catch (e) { console.warn('google translate', e); }
   const parts = q.match(/[\s\S]{1,450}(?=\s|$)|[\s\S]{1,450}/g) || [q]; const res = [];
   for (const part of parts) {
-    const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(part)}&langpair=${from}|${to}`);
-    const j = await r.json(); if (String(j.responseStatus) !== '200') throw new Error(j.responseDetails || 'ошибка сервиса');
+    const j = await fetchT(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(part)}&langpair=${from}|${to}`);
+    if (String(j.responseStatus) !== '200') throw new Error(j.responseDetails || 'ошибка сервиса');
     res.push(j.responseData.translatedText);
   }
-  const ta = document.createElement('textarea'); ta.innerHTML = res.join(' '); return ta.value;
+  const ta = document.createElement('textarea'); ta.innerHTML = res.join(' '); return { text: ta.value, dict: [] };
 }
 function openTranslator(source) {
   source = typeof source === 'string' ? { text: source } : (source || {});
@@ -1807,15 +1820,17 @@ function openTranslator(source) {
       <div class="row"><select class="field" id="trFrom" aria-label="С какого языка">${opts(from)}</select><button class="btn icon" type="button" id="trSwap" aria-label="Поменять языки">${ICON.swap}</button><select class="field" id="trTo" aria-label="На какой язык">${opts(to)}</select></div>
       <div class="trbox"><div class="trh"><span>${hasInk ? 'Распознано' : 'Текст'}</span><button class="btn icon ghost" type="button" id="sayIn" aria-label="Озвучить">${ICON.speaker}</button></div><textarea id="trIn" placeholder="${hasInk ? 'Распознаю почерк…' : 'Напечатайте или вставьте текст'}"></textarea></div>
       <div class="row"><button class="btn primary" type="button" id="trGo">Перевести</button>${hasInk ? '<button class="btn" type="button" id="trRe">Распознать заново</button>' : ''}<span class="hint" id="trSt"></span></div>
-      <div class="trbox"><div class="trh"><span>Перевод</span><button class="btn icon ghost" type="button" id="sayOut" aria-label="Озвучить перевод">${ICON.speaker}</button></div><textarea id="trOut" readonly placeholder="Здесь будет перевод"></textarea></div>
+      <div class="trbox"><div class="trh"><span>Перевод</span><button class="btn icon ghost" type="button" id="sayOut" aria-label="Озвучить перевод">${ICON.speaker}</button></div><textarea id="trOut" readonly placeholder="Здесь будет перевод"></textarea><div class="trdict" id="trDict"></div></div>
       <div class="row" style="justify-content:flex-end"><button class="btn" type="button" data-a="c">Закрыть</button><button class="btn" type="button" id="trIns">Вставить перевод в заметку</button></div>`;
     const inp = b.querySelector('#trIn'), out = b.querySelector('#trOut'), st = b.querySelector('#trSt');
     inp.value = source.text || '';
     const go = async () => {
       const q = inp.value.trim(); if (!q) return;
-      st.textContent = 'Перевожу…'; out.value = '';
-      try { out.value = await translateText(q, from, to); st.textContent = ''; }
-      catch (e) { st.textContent = 'Не получилось перевести: ' + (e.message || 'нет интернета'); }
+      st.textContent = 'Перевожу…'; out.value = ''; const dd = b.querySelector('#trDict'); dd.innerHTML = '';
+      try {
+        const r = await translateText(q, from, to); out.value = r.text; st.textContent = '';
+        dd.innerHTML = r.dict.map(d => `<div><b>${esc(d.pos)}:</b> ${esc(d.terms.join(', '))}</div>`).join('');
+      } catch (e) { st.textContent = e.name === 'AbortError' ? 'Переводчик не ответил, нажмите «Перевести» ещё раз' : 'Не получилось перевести: ' + (e.message || 'нет интернета'); }
     };
     const rec = async () => {
       if (!hasInk) return;
