@@ -620,6 +620,7 @@ let tool = 'pen', penKind = lsGet('kp-pen') || 'ball', penColor = PEN_COLORS[0],
 let penAlpha = 1, markAlpha = 1, recentColors = JSON.parse(lsGet('kp-recent') || '[]');
 let penW = +(lsGet('kp-penw') || 3.2), markW = +(lsGet('kp-markw') || 26), eraseW = 24, shapeKind = 'line', textSize = 26, textColor = PEN_COLORS[0];
 let undoS = [], redoS = [], sel = null, selection = null, penSeen = lsGet('kp-penseen') === '1';
+if (lsGet('kp-finger-v') !== '2') { lsSet('kp-finger', 'auto'); lsSet('kp-finger-v', '2'); } // reset an old "finger draws" choice once
 let fingerPref = lsGet('kp-finger') || 'auto';
 let zoom = 1, W = 800, s = 0.8, DPR = 1, viewTop = 0, viewH = 0, tops = [0], totalH = PAGE_H;
 let lib = { section: 'home', query: '', sort: lsGet('kp-sort') || 'date', view: lsGet('kp-view') || 'grid' };
