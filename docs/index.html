@@ -1734,7 +1734,7 @@ function openCalc() {
       box.querySelectorAll('[data-t]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.t === m)));
       pad.hidden = m !== 'hand'; K.hidden = m !== 'keys';
       box.querySelector('#cTip').textContent = m === 'hand' ? 'Пишите пальцем или Pencil' : 'Можно печатать с клавиатуры';
-      if (m === 'hand') requestAnimationFrame(sizePad);
+      if (m === 'hand') { requestAnimationFrame(sizePad); setTimeout(sizePad, 60); }
     };
     const press = k => {
       if (k === 'C') { expr = ''; last = ''; }
@@ -1766,7 +1766,7 @@ function openCalc() {
       } catch (e) { if (tok === recTok) box.querySelector('#cEx').textContent = e.msg || 'Не получилось распознать'; }
     }
     let curSt = null;
-    cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); const r = cv.getBoundingClientRect(); curSt = { pts: [[e.clientX - r.left, e.clientY - r.top, .5]] }; padStrokes.push(curSt); clearTimeout(recT); drawPad(); });
+    cv.addEventListener('pointerdown', e => { e.preventDefault(); try { cv.setPointerCapture(e.pointerId); } catch {} if (cv.width !== Math.round(cv.clientWidth * D) || D === 1) sizePad(); const r = cv.getBoundingClientRect(); curSt = { pts: [[e.clientX - r.left, e.clientY - r.top, .5]] }; padStrokes.push(curSt); clearTimeout(recT); drawPad(); });
     cv.addEventListener('pointermove', e => { if (!curSt) return; const r = cv.getBoundingClientRect(); for (const ev of evs(e)) curSt.pts.push([ev.clientX - r.left, ev.clientY - r.top, .5]); drawPad(); });
     const endSt = () => { if (!curSt) return; curSt = null; clearTimeout(recT); recT = setTimeout(runRec, 650); };
     cv.addEventListener('pointerup', endSt); cv.addEventListener('pointercancel', endSt);
