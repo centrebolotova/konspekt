@@ -157,6 +157,18 @@ select.btn{padding-right:6px}
 #toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(10px);background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;max-width:calc(100% - 32px);text-align:center;z-index:10}
 #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 @media (prefers-reduced-motion:reduce){#toast{transition:none}}
+.head-actions{display:flex;gap:8px;flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+.dot.ok{background:#2E9E5B}.dot.busy{background:var(--accent)}.dot.err{background:var(--danger)}
+#syncDlg{position:fixed;inset:0;z-index:20;background:rgba(10,15,22,.45);display:grid;place-items:center;padding:16px}
+.dlg{width:100%;max-width:420px;background:var(--surface);color:var(--fg);border-radius:14px;padding:20px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:12px;max-height:100%;overflow:auto}
+.dlg h2{font-family:var(--f-display);font-weight:600;font-size:19px;margin:0}
+.dlg p{margin:0;color:var(--muted);font-size:14px}
+.dlg label{display:flex;flex-direction:column;gap:4px;font-size:14px;font-weight:500}
+.dlg input{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:var(--surface-2)}
+.dlg .row{display:flex;gap:8px;flex-wrap:wrap}
+.dlg .err{color:var(--danger);font-size:14px}
+.dlg .who{font-weight:600;word-break:break-all}
 @media (max-width:520px){.btn .lbl{display:none}.btn:has(.lbl){padding:0 9px}}
 </style>
 </head>
@@ -169,7 +181,10 @@ select.btn{padding-right:6px}
       <h1>Конспект</h1>
       <p>Видео, YouTube или PDF слева, рукописный конспект справа. Каждая запись помнит минуту видео.</p>
     </div>
-    <button class="btn primary" id="newBtn" type="button"></button>
+    <div class="head-actions">
+      <button class="btn" id="syncBtn" type="button" hidden></button>
+      <button class="btn primary" id="newBtn" type="button"></button>
+    </div>
   </div>
   <div class="shelf" id="shelf"></div>
 </div>
@@ -178,6 +193,7 @@ select.btn{padding-right:6px}
   <div class="topbar">
     <button class="btn" id="backBtn" type="button"></button>
     <input class="title-in" id="titleIn" aria-label="Название тетради" autocomplete="off">
+    <button class="btn icon" id="syncMini" type="button" aria-label="Синхронизация" title="Синхронизация" hidden></button>
     <button class="btn icon" id="undoBtn" type="button" aria-label="Отменить" title="Отменить"></button>
     <button class="btn icon" id="redoBtn" type="button" aria-label="Повторить" title="Повторить"></button>
   </div>
@@ -208,6 +224,7 @@ select.btn{padding-right:6px}
 </div>
 <input type="file" id="fVideo" accept="video/*" hidden>
 <input type="file" id="fPdf" accept="application/pdf,.pdf" hidden>
+<div id="syncDlg" hidden><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="syncTitle" id="syncBody"></div></div>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -218,6 +235,9 @@ const PEN_COLORS = ['#17202A', '#2A54C6', '#C62828', '#2E7D32', '#7B3FB8'];
 const MARK_COLORS = ['#F5C842', '#7DDBA8', '#F79CB8', '#8CC4FF'];
 const SIZES = { pen: [2.4, 4, 7], marker: [18, 28, 42] };
 const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+// Синхронизация через Supabase: адрес проекта и публичный ключ (Settings → API). Пусто — синхронизация выключена.
+const SYNC = { url: '', key: '' };
+const SB_LIB = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
 
 const I = (d, extra='') => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true" ${extra}>${d}</svg>`;
 const ICON = {
@@ -360,7 +380,7 @@ function doRedo() { if (!redoS.length) return; undoS.push(snapshot()); restore(r
 function updUR() { $('#undoBtn').disabled = !undoS.length; $('#redoBtn').disabled = !redoS.length; }
 let saveT;
 function changed() { if (!note) return; note.updated = Date.now(); clearTimeout(saveT); saveT = setTimeout(saveNow, 700); }
-async function saveNow() { clearTimeout(saveT); if (note) await store.put(note); }
+async function saveNow() { clearTimeout(saveT); if (note) { await store.put(note); syncSoon(); } }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
 
 /* ---------- items ---------- */
@@ -877,7 +897,8 @@ function renderShelf() {
     del.onclick = async e => {
       e.stopPropagation();
       if (!armed) { armed = true; del.classList.add('confirm'); del.textContent = 'Удалить?'; armT = setTimeout(() => { armed = false; del.classList.remove('confirm'); del.innerHTML = ICON.trash; }, 3000); return; }
-      clearTimeout(armT); await store.del(n.id); notes = notes.filter(x => x !== n); renderShelf(); toast('Тетрадь удалена');
+      clearTimeout(armT); await store.del(n.id); await store.put({ id: n.id, deleted: true, updated: Date.now() });
+      notes = notes.filter(x => x !== n); renderShelf(); toast('Тетрадь удалена'); syncSoon();
     };
     meta.append(del); c.append(cv, meta);
     c.onclick = () => openNote(n);
@@ -889,7 +910,11 @@ async function showLibrary() {
   if (note) { await saveNow(); closeSource(); }
   note = null; sel = null;
   $('#editor').hidden = true; $('#library').hidden = false;
-  notes = (await store.all()) || []; notes.sort((a, b) => b.updated - a.updated);
+  await refreshShelf();
+  syncNow();
+}
+async function refreshShelf() {
+  notes = ((await store.all()) || []).filter(n => !n.deleted); notes.sort((a, b) => b.updated - a.updated);
   renderShelf();
 }
 function blankNote(title) { const t = Date.now(); return { id: uid(), title, created: t, updated: t, source: null, pages: 2, strokes: [], items: [] }; }
@@ -936,12 +961,128 @@ document.addEventListener('keydown', e => {
 });
 window.addEventListener('pagehide', saveNow);
 
+/* ---------- sync (Supabase, last change wins per notebook) ---------- */
+const CLOUD = I('<path d="M7 18h10a4 4 0 00.6-7.95A6 6 0 006.1 9.1 4.5 4.5 0 007 18z"/>');
+let sb = null, user = null, syncing = false, syncAgain = false, syncState = 'off', syncErr = '', lastSync = 0, syncT;
+function syncSoon() { if (!user) return; clearTimeout(syncT); syncT = setTimeout(syncNow, 4000); }
+async function syncInit() {
+  if (!SYNC.url || !SYNC.key) return;
+  $('#syncBtn').hidden = false; $('#syncMini').hidden = false; renderSyncUI();
+  try {
+    await loadScript(SB_LIB);
+    sb = window.supabase.createClient(SYNC.url, SYNC.key, { auth: { persistSession: true, autoRefreshToken: true } });
+    const { data } = await sb.auth.getSession(); user = data.session ? data.session.user : null;
+    sb.auth.onAuthStateChange((_e, session) => { const was = user; user = session ? session.user : null; if (!was && user) syncNow(); renderSyncUI(); });
+    renderSyncUI(); if (user) syncNow();
+  } catch (e) { console.warn(e); syncState = 'err'; syncErr = 'Нет связи с сервером синхронизации'; renderSyncUI(); }
+}
+async function syncNow() {
+  if (!sb || !user) return;
+  if (syncing) { syncAgain = true; return; }
+  syncing = true; syncState = 'busy'; renderSyncUI();
+  let pulledOpen = null;
+  try {
+    if (note) { clearTimeout(saveT); await store.put(note); }
+    const local = (await store.all()) || [], lmap = new Map(local.map(n => [n.id, n]));
+    const { data: remote, error } = await sb.from('notes').select('id,updated,deleted'); if (error) throw error;
+    const rmap = new Map(remote.map(r => [r.id, r])), pull = [];
+    for (const r of remote) {
+      const l = lmap.get(r.id); if (l && l.updated >= r.updated) continue;
+      if (r.deleted) { if (l && !l.deleted) await store.del(r.id); await store.put({ id: r.id, deleted: true, updated: r.updated }); if (note && note.id === r.id) pulledOpen = 'deleted'; }
+      else pull.push(r.id);
+    }
+    for (let i = 0; i < pull.length; i += 10) {
+      const { data, error: e2 } = await sb.from('notes').select('id,data,updated').in('id', pull.slice(i, i + 10)); if (e2) throw e2;
+      for (const r of data) { if (!r.data) continue; const n = { ...r.data, id: r.id, updated: r.updated }; await store.put(n); if (note && note.id === n.id) pulledOpen = n; }
+    }
+    for (const l of local) {
+      const r = rmap.get(l.id); if (r && r.updated >= l.updated) continue;
+      const row = { user_id: user.id, id: l.id, updated: l.updated, deleted: !!l.deleted, data: l.deleted ? null : l };
+      const { error: e3 } = await sb.from('notes').upsert(row, { onConflict: 'user_id,id' }); if (e3) throw e3;
+    }
+    lastSync = Date.now(); syncState = 'ok'; syncErr = '';
+    if (pulledOpen === 'deleted') { note = null; showLibrary(); toast('Эту тетрадь удалили на другом устройстве'); }
+    else if (pulledOpen) reloadOpen(pulledOpen);
+    if (!$('#library').hidden) await refreshShelf();
+  } catch (e) {
+    console.warn(e); syncState = 'err';
+    syncErr = /fetch|network|load/i.test(e.message || '') ? 'Нет интернета, синхронизирую позже' : (e.message || String(e));
+  } finally {
+    syncing = false; renderSyncUI();
+    if (syncAgain) { syncAgain = false; syncSoon(); }
+  }
+}
+function reloadOpen(n) {
+  const oldSrc = JSON.stringify(note.source || null), top = scroller.scrollTop;
+  note = n; undoS = []; redoS = []; sel = null; updUR();
+  $('#titleIn').value = n.title; layout(); scroller.scrollTop = top;
+  if (JSON.stringify(n.source || null) !== oldSrc) loadSource();
+  toast('Тетрадь обновлена с другого устройства');
+}
+function syncLabel() {
+  if (!user) return 'Войти для синхронизации';
+  if (syncState === 'busy') return 'Синхронизирую…';
+  if (syncState === 'err') return syncErr || 'Ошибка синхронизации';
+  if (lastSync) return 'Синхронизировано в ' + new Date(lastSync).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  return 'Синхронизация';
+}
+function renderSyncUI() {
+  if (!SYNC.url) return;
+  const cls = !user ? '' : syncState;
+  $('#syncBtn').innerHTML = `<span class="dot ${cls}"></span>${CLOUD}<span class="lbl">${user ? 'Синхронизация' : 'Войти'}</span>`;
+  $('#syncBtn').title = $('#syncMini').title = syncLabel();
+  $('#syncMini').innerHTML = `<span class="dot ${cls}" style="position:absolute;margin:-14px 0 0 16px"></span>${CLOUD}`;
+  $('#syncMini').style.position = 'relative';
+  if (!$('#syncDlg').hidden) renderSyncDlg();
+}
+let dlgMsg = '';
+function renderSyncDlg() {
+  const b = $('#syncBody');
+  if (!sb) { b.innerHTML = `<h2 id="syncTitle">Синхронизация</h2><p>${esc(syncErr || 'Подключаюсь…')}</p><div class="row"><button class="btn" type="button" data-a="close">Закрыть</button></div>`; }
+  else if (!user) {
+    b.innerHTML = `<h2 id="syncTitle">Синхронизация</h2>
+      <p>Войдите, и тетради появятся на всех ваших устройствах. Видеофайлы не переносятся: на другом устройстве выберите видео заново, конспект подхватится.</p>
+      <form id="authForm" class="dlg-form" style="display:flex;flex-direction:column;gap:10px">
+        <label>Почта<input id="authEmail" type="email" autocomplete="username" required></label>
+        <label>Пароль, от 6 символов<input id="authPass" type="password" autocomplete="current-password" minlength="6" required></label>
+        ${dlgMsg ? `<p class="err">${esc(dlgMsg)}</p>` : ''}
+        <div class="row"><button class="btn primary" type="submit" data-a="in">Войти</button><button class="btn" type="button" data-a="up">Создать аккаунт</button><button class="btn ghost" type="button" data-a="close">Закрыть</button></div>
+      </form>`;
+  } else {
+    b.innerHTML = `<h2 id="syncTitle">Синхронизация</h2>
+      <p>Вы вошли как</p><div class="who">${esc(user.email || '')}</div>
+      <p${syncState === 'err' ? ' class="err"' : ''}>${esc(syncLabel())}</p>
+      <div class="row"><button class="btn primary" type="button" data-a="now">Синхронизировать сейчас</button><button class="btn" type="button" data-a="out">Выйти</button><button class="btn ghost" type="button" data-a="close">Закрыть</button></div>`;
+  }
+  b.querySelectorAll('[data-a]').forEach(btn => { if (btn.type !== 'submit') btn.onclick = () => dlgAction(btn.dataset.a); });
+  const f = $('#authForm'); if (f) f.onsubmit = e => { e.preventDefault(); dlgAction('in'); };
+}
+const authErr = m => /Invalid login/i.test(m) ? 'Неверная почта или пароль' : /already registered/i.test(m) ? 'Такой аккаунт уже есть. Нажмите «Войти»' : /at least 6/i.test(m) ? 'Пароль должен быть не короче 6 символов' : /Email not confirmed/i.test(m) ? 'Почта не подтверждена: откройте письмо и перейдите по ссылке' : m;
+async function dlgAction(a) {
+  if (a === 'close') { $('#syncDlg').hidden = true; dlgMsg = ''; return; }
+  if (a === 'now') { syncNow(); return; }
+  if (a === 'out') { await sb.auth.signOut(); user = null; syncState = 'off'; renderSyncUI(); return; }
+  const email = ($('#authEmail').value || '').trim(), password = $('#authPass').value || '';
+  if (!email || password.length < 6) { dlgMsg = 'Введите почту и пароль от 6 символов'; renderSyncDlg(); $('#authEmail').value = email; return; }
+  dlgMsg = '';
+  const res = a === 'up' ? await sb.auth.signUp({ email, password }) : await sb.auth.signInWithPassword({ email, password });
+  if (res.error) { dlgMsg = authErr(res.error.message); renderSyncDlg(); $('#authEmail').value = email; return; }
+  if (!res.data.session) { dlgMsg = 'Мы отправили письмо: подтвердите почту и нажмите «Войти»'; renderSyncDlg(); $('#authEmail').value = email; return; }
+  user = res.data.session.user; renderSyncUI(); toast('Готово, синхронизирую тетради'); syncNow();
+}
+function openSyncDlg() { $('#syncDlg').hidden = false; renderSyncDlg(); const e = $('#authEmail'); if (e) e.focus(); }
+$('#syncBtn').onclick = openSyncDlg; $('#syncMini').onclick = openSyncDlg;
+$('#syncDlg').addEventListener('click', e => { if (e.target.id === 'syncDlg') dlgAction('close'); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
+setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, 90000);
+
 /* ---------- start ---------- */
 (async () => {
   setTool('pen');
-  notes = (await store.all()) || [];
+  syncInit();
+  notes = ((await store.all()) || []).filter(n => !n.deleted);
   if (!notes.length && !lsGet('kp-seeded')) {
-    const n = sampleNote(); await store.put(n); notes = [n]; lsSet('kp-seeded', '1');
+    const n = sampleNote(); n.id = 'primer'; await store.put(n); notes = [n]; lsSet('kp-seeded', '1');
     openNote(n);
   } else showLibrary();
 })();
